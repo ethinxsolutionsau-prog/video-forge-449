@@ -46,3 +46,14 @@ async def ensure_indexes():
     await db.password_reset_attempts.create_index("identifier")
     # Assets
     await db.assets.create_index([("project_id", 1), ("scene_id", 1), ("external_id", 1), ("source", 1)])
+    # Unique only when external_id is set — protects scene stock attachments from double-attach
+    # races without conflicting with briefs / generated_thumbnail assets that have no external_id.
+    try:
+        await db.assets.create_index(
+            [("project_id", 1), ("scene_id", 1), ("external_id", 1), ("source", 1)],
+            unique=True,
+            partialFilterExpression={"external_id": {"$exists": True, "$type": "string"}},
+            name="assets_stock_unique",
+        )
+    except Exception:  # index already exists with different options — ignore in dev
+        pass

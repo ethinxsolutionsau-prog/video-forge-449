@@ -75,6 +75,18 @@ Build a production-ready SaaS web app **FacelessForge**: a creator-first faceles
   - Asset Library upgraded with preview thumbnails, source badge, photographer attribution, dimensions, linked scene chip, remove action, filter tabs (All / Stock / Thumbnails).
   - 67/67 backend pytest (+13 new) + 100% Playwright passing. Zero critical issues.
 
+### Phase 3.5 + Phase 4 — 2026-02 (shipping now)
+- [x] **DB hardening**: compound partial unique index `assets(project_id, scene_id, external_id, source)` where `external_id` exists — closes the double-attach race at the database level without affecting briefs / generated thumbnails.
+- [x] **Auto-attach Assets** (one-click bulk): `POST /api/projects/{pid}/auto-attach-assets {replace_existing, media_type}` iterates scenes (search_terms → visual_direction → topic fallback chain), attaches top stock result, returns `{total, attached, skipped, failed, details, mock}`. UI: green "Auto-attach Assets" button on Scenes tab; ConfirmDialog when scenes already have assets (Replace vs Fill-empty); summary toast.
+- [x] **Phase 4 — Gemini Nano Banana thumbnail image generation** (mock-first):
+  - `app/thumbnail_images.py`: builds rich 16:9 prompt from brief + project (no baked-in text, negative-space hint for title overlay); calls Gemini via `emergentintegrations` LlmChat with `gemini-3.1-flash-image-preview`; falls back to deterministic branded SVG when key missing or `USE_MOCK_THUMBNAIL_IMAGES=true`.
+  - Generated images persist as files under `/app/backend/static/thumbs/{project_id}/{asset_id}.{png|svg}`, served via FastAPI `StaticFiles` mount at `/api/static/...` (routes through k8s ingress).
+  - Endpoints: `GET /api/thumbnails/meta`, `POST /api/projects/{pid}/thumbnails/{brief_id}/generate {variants:1..3}`, `POST /api/projects/{pid}/thumbnails/{aid}/select` (exclusive per project — demotes prior selected, sets `project.selected_thumbnail_asset_id`), `POST /api/projects/{pid}/thumbnails/{aid}/reject`.
+  - Asset extensions: `prompt`, `provider`, `model`, `mock`, `brief_asset_id`, `brief_snapshot`, `preview_path`, status `selected/rejected/generated`.
+  - `ThumbnailPanel` upgrade: per-brief Generate Image / 3 Variants buttons; generated tiles in 2-col grid under each concept with hover-revealed Select / Reject / Open / Copy Prompt / Delete; SELECTED green ring + badge; amber MOCK / cyan GENERATED / red REJECTED state badges.
+  - **Public share page**: when `selected_thumbnail_asset_id` is set, the public payload includes `selected_thumbnail_url`; the share page renders it as a 16:9 hero above the title and uses it as `og:image` / `twitter:image`. Falls back to `og-share-default.svg`.
+  - **81/81 backend pytest** (+14 new across TestAutoAttach, TestDBIndex, TestThumbnailImages) + frontend Playwright verified. Zero issues found.
+
 ## Seeded Content
 - `admin@facelessforge.io` / `admin123`
 - `creator@facelessforge.io` / `creator123`

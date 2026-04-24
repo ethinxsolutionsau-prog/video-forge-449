@@ -1,13 +1,16 @@
 import React, { useState } from "react";
 import { toast } from "sonner";
-import { Sparkles, Loader2, Download, Search, X as XIcon } from "lucide-react";
+import { Sparkles, Loader2, Download, Search, X as XIcon, Wand2 } from "lucide-react";
 import { api, formatApiError, API } from "../lib/api";
 import { formatDuration } from "../lib/format";
 import StockAssetModal from "./StockAssetModal";
+import { useConfirm } from "./ConfirmDialog";
 
 export default function ScenePlanner({ projectId, scenes, canEdit, onChange, hasScript, attachedAssets = [] }) {
   const [generating, setGenerating] = useState(false);
+  const [autoAttaching, setAutoAttaching] = useState(false);
   const [activeScene, setActiveScene] = useState(null);
+  const confirm = useConfirm();
 
   const generate = async () => {
     setGenerating(true);
@@ -43,6 +46,54 @@ export default function ScenePlanner({ projectId, scenes, canEdit, onChange, has
       (a) => a.scene_id === sceneId && (a.asset_type === "stock_video" || a.asset_type === "stock_image")
     );
 
+  const scenesWithAssets = (scenes || []).filter((s) => assetsForScene(s.id).length > 0).length;
+  const scenesWithoutAssets = (scenes || []).length - scenesWithAssets;
+
+  const autoAttach = async () => {
+    let replaceExisting = false;
+    if (scenesWithAssets > 0) {
+      const ok = await confirm({
+        title: "Replace existing scene assets?",
+        description: `${scenesWithAssets} scenes already have assets. Choose Replace to rebuild everything, or Cancel to only fill the ${scenesWithoutAssets} empty scenes.`,
+        confirmLabel: "Replace all",
+        cancelLabel: scenesWithoutAssets > 0 ? `Fill ${scenesWithoutAssets} empty only` : "Cancel",
+        tone: "warning",
+      });
+      replaceExisting = !!ok;
+      if (!ok && scenesWithoutAssets === 0) return; // nothing to do
+    }
+    setAutoAttaching(true);
+    const toastId = toast.loading(
+      `Auto-attaching to ${replaceExisting ? "all" : scenesWithoutAssets} scenes…`,
+      { id: "auto-attach" },
+    );
+    try {
+      const { data } = await api.post(`/projects/${projectId}/auto-attach-assets`, {
+        replace_existing: replaceExisting,
+        media_type: "both",
+      });
+      const parts = [
+        `${data.attached} attached`,
+        `${data.skipped} skipped`,
+        `${data.failed} failed`,
+      ];
+      if (data.attached > 0) {
+        toast.success(`Auto-attach complete`, {
+          id: toastId,
+          description: parts.join(" · "),
+        });
+      } else {
+        toast.info("Auto-attach finished", { id: toastId, description: parts.join(" · ") });
+      }
+      const { data: refreshed } = await api.get(`/projects/${projectId}`);
+      onChange(refreshed);
+    } catch (err) {
+      toast.error("Auto-attach failed", { id: toastId, description: formatApiError(err.response?.data?.detail) || err.message });
+    } finally {
+      setAutoAttaching(false);
+    }
+  };
+
   if (!scenes || scenes.length === 0) {
     return (
       <div className="border border-zinc-800 border-dashed p-10 text-center rounded-sm">
@@ -71,6 +122,17 @@ export default function ScenePlanner({ projectId, scenes, canEdit, onChange, has
           {scenes.length} scenes · total {formatDuration(scenes[scenes.length - 1]?.end_time || 0)}
         </div>
         <div className="flex items-center gap-2">
+          {canEdit && (
+            <button
+              data-testid="auto-attach-btn"
+              onClick={autoAttach}
+              disabled={autoAttaching}
+              className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-widest text-black bg-[#00FF66] hover:bg-[#33FF80] px-2.5 py-1 rounded-sm transition-colors disabled:opacity-60"
+            >
+              {autoAttaching ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} strokeWidth={1.8} />}
+              {autoAttaching ? "Auto-attaching…" : "Auto-attach Assets"}
+            </button>
+          )}
           <button
             data-testid="export-scenes-csv"
             onClick={exportCsv}

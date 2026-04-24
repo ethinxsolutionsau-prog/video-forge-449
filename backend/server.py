@@ -8,6 +8,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 
 from app.db import init_db, ensure_indexes, close_db
@@ -45,6 +46,13 @@ async def health():
 
 
 app.include_router(api_router)
+
+# Static mount for generated images. Served via /api/static/thumbs/{project_id}/{asset_id}.{ext}
+# so it routes through the k8s ingress /api/* rule.
+from pathlib import Path as _Path
+_STATIC = _Path(__file__).parent / "static"
+_STATIC.mkdir(parents=True, exist_ok=True)
+app.mount("/api/static", StaticFiles(directory=str(_STATIC)), name="static")
 
 # CORS: in dev, use wildcard-credentials only if DEV_MODE.
 # In production, only allow explicit FRONTEND_URL.

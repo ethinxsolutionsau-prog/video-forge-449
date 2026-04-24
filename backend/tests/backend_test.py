@@ -1001,3 +1001,351 @@ class TestStockFetcher:
         self._created_asset_ids.append((pid, asset["id"]))
         assert asset["asset_type"] == "stock_video"
         assert asset["duration"] == item["duration"]
+
+# =========================================================================
+# Phase 4 — Auto-attach + Thumbnail image generation (Gemini Nano Banana mock)
+# =========================================================================
+class TestAutoAttach:
+    """POST /projects/{id}/auto-attach-assets — mock Pexels, DB-idx dedupe."""
+
+    @pytest.fixture(scope="class")
+    def target_project(self, creator_session):
+        r = creator_session.get(f"{BASE_URL}/api/projects", timeout=20)
+        projects = r.json()
+        target = next((p for p in projects if p["status"] == "COMPLETED"), None) or \
+                 next((p for p in projects if p["status"] == "SCENES_GENERATED"), None)
+        assert target, "no completed/scenes_generated project for auto-attach tests"
+        full = creator_session.get(f"{BASE_URL}/api/projects/{target['id']}", timeout=20).json()
+        merged = dict(full["project"])
+        merged["scenes"] = full["scenes"]
+        merged["assets"] = full["assets"]
+        return merged
+
+    @pytest.fixture(scope="class")
+    def second_creator(self):
+        s = requests.Session()
+        email = f"TEST_aa_{uuid.uuid4().hex[:8]}@facelessforge.io"
+        r = s.post(f"{BASE_URL}/api/auth/register",
+                   json={"name": "AA Tester", "email": email,
+                         "password": "pw123456", "role": "creator"}, timeout=20)
+        assert r.status_code == 200
+        return s
+
+    _created_asset_ids: list = []
+
+    @pytest.fixture(scope="class", autouse=True)
+    def _cleanup(self, creator_session, target_project):
+        yield
+        # Nuke all stock+generated_thumbnail assets we created on target_project
+        pid = target_project["id"]
+        try:
+            g = creator_session.get(f"{BASE_URL}/api/projects/{pid}", timeout=20).json()
+            assets = g.get("assets") or []
+            for a in assets:
+                if a.get("asset_type") in ("stock_image", "stock_video", "generated_thumbnail"):
+                    creator_session.delete(f"{BASE_URL}/api/projects/{pid}/assets/{a['id']}", timeout=10)
+            # clear selected_thumbnail_asset_id if still set
+            from pymongo import MongoClient
+            mc = MongoClient(os.environ["MONGO_URL"])
+            mc[os.environ["DB_NAME"]].projects.update_one(
+                {"id": pid}, {"$set": {"selected_thumbnail_asset_id": None}}
+            )
+            mc.close()
+        except Exception:
+            pass
+
+    def test_auto_attach_no_scenes_400(self, creator_session):
+        p = creator_session.post(f"{BASE_URL}/api/projects", json={
+            "name": "TEST_aa_noscene", "niche": "tech",
+            "topic": "Some valid topic text here", "audience": "x",
+            "tone": "y", "target_duration": 60}, timeout=15).json()
+        r = creator_session.post(f"{BASE_URL}/api/projects/{p['id']}/auto-attach-assets",
+                                 json={"replace_existing": False, "media_type": "both"}, timeout=15)
+        assert r.status_code == 400
+        creator_session.delete(f"{BASE_URL}/api/projects/{p['id']}", timeout=15)
+
+    def test_auto_attach_fill_empty(self, creator_session, target_project):
+        pid = target_project["id"]
+        # First clear stock assets so we start clean
+        g = creator_session.get(f"{BASE_URL}/api/projects/{pid}", timeout=20).json()
+        for a in g.get("assets", []):
+            if a.get("asset_type") in ("stock_image", "stock_video"):
+                creator_session.delete(f"{BASE_URL}/api/projects/{pid}/assets/{a['id']}", timeout=10)
+        r = creator_session.post(f"{BASE_URL}/api/projects/{pid}/auto-attach-assets",
+                                 json={"replace_existing": False, "media_type": "both"}, timeout=60)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        for k in ("total", "attached", "skipped", "failed", "details", "mock"):
+            assert k in d
+        assert d["mock"] is True
+        assert d["attached"] >= 1
+        # each scene now has at least one stock asset
+        g2 = creator_session.get(f"{BASE_URL}/api/projects/{pid}", timeout=20).json()
+        scene_ids = {s["id"] for s in g2["scenes"]}
+        scenes_with_stock = set()
+        for a in g2.get("assets", []):
+            if a.get("asset_type") in ("stock_image", "stock_video") and a.get("scene_id"):
+                scenes_with_stock.add(a["scene_id"])
+        assert scene_ids.issubset(scenes_with_stock) or len(scenes_with_stock) >= len(scene_ids) - 1
+
+    def test_auto_attach_skips_when_scene_has_asset(self, creator_session, target_project):
+        pid = target_project["id"]
+        # Now all scenes have assets — running again with replace_existing=false should skip all
+        r = creator_session.post(f"{BASE_URL}/api/projects/{pid}/auto-attach-assets",
+                                 json={"replace_existing": False, "media_type": "both"}, timeout=60)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["skipped"] >= 1
+        assert d["attached"] == 0
+
+    def test_auto_attach_replace_existing(self, creator_session, target_project):
+        pid = target_project["id"]
+        before = creator_session.get(f"{BASE_URL}/api/projects/{pid}", timeout=20).json()
+        before_stock = [a for a in before["assets"] if a.get("asset_type") in ("stock_image", "stock_video")]
+        r = creator_session.post(f"{BASE_URL}/api/projects/{pid}/auto-attach-assets",
+                                 json={"replace_existing": True, "media_type": "both"}, timeout=60)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["attached"] >= 1
+        # after replace, asset ids should have changed for scene assets
+        after = creator_session.get(f"{BASE_URL}/api/projects/{pid}", timeout=20).json()
+        after_stock = [a for a in after["assets"] if a.get("asset_type") in ("stock_image", "stock_video")]
+        before_ids = {a["id"] for a in before_stock}
+        after_ids = {a["id"] for a in after_stock}
+        assert before_ids != after_ids, "replace_existing did not rotate assets"
+
+    def test_auto_attach_cross_user_forbidden(self, second_creator, target_project):
+        r = second_creator.post(f"{BASE_URL}/api/projects/{target_project['id']}/auto-attach-assets",
+                                json={"replace_existing": False, "media_type": "both"}, timeout=15)
+        assert r.status_code == 403
+
+
+class TestDBIndex:
+    """Compound partial-unique index on assets."""
+
+    def test_duplicate_stock_blocked_by_index(self):
+        from pymongo import MongoClient
+        from pymongo.errors import DuplicateKeyError
+        from dotenv import load_dotenv
+        load_dotenv("/app/backend/.env")
+        mc = MongoClient(os.environ["MONGO_URL"])
+        db = mc[os.environ["DB_NAME"]]
+        pid = "TEST_idx_" + uuid.uuid4().hex[:6]
+        sid = "TEST_scn_" + uuid.uuid4().hex[:6]
+        doc = {"id": uuid.uuid4().hex, "project_id": pid, "scene_id": sid,
+               "external_id": "EXT123", "source": "mock", "asset_type": "stock_image"}
+        db.assets.insert_one(doc)
+        dup = dict(doc); dup["id"] = uuid.uuid4().hex
+        raised = False
+        try:
+            db.assets.insert_one(dup)
+        except DuplicateKeyError:
+            raised = True
+        assert raised, "compound unique index did not block duplicate"
+        db.assets.delete_many({"project_id": pid})
+        mc.close()
+
+    def test_index_does_not_block_briefs(self):
+        from pymongo import MongoClient
+        from dotenv import load_dotenv
+        load_dotenv("/app/backend/.env")
+        mc = MongoClient(os.environ["MONGO_URL"])
+        db = mc[os.environ["DB_NAME"]]
+        pid = "TEST_idx2_" + uuid.uuid4().hex[:6]
+        # two docs with no external_id and same project_id/scene_id — should coexist
+        d1 = {"id": uuid.uuid4().hex, "project_id": pid, "scene_id": None,
+              "asset_type": "thumbnail_concept", "source": "generated_brief"}
+        d2 = {"id": uuid.uuid4().hex, "project_id": pid, "scene_id": None,
+              "asset_type": "generated_thumbnail", "source": "mock_thumbnail"}
+        db.assets.insert_one(d1)
+        db.assets.insert_one(d2)
+        # Another with external_id=None explicit null should still work (partial filter requires $type string)
+        d3 = {"id": uuid.uuid4().hex, "project_id": pid, "scene_id": None,
+              "external_id": None, "asset_type": "thumbnail_concept", "source": "generated_brief"}
+        db.assets.insert_one(d3)
+        db.assets.delete_many({"project_id": pid})
+        mc.close()
+
+
+class TestThumbnailImages:
+    """Gemini Nano Banana mock thumbnail image generation + select/reject."""
+
+    @pytest.fixture(scope="class")
+    def target_project(self, creator_session):
+        r = creator_session.get(f"{BASE_URL}/api/projects", timeout=20)
+        projects = r.json()
+        target = next((p for p in projects if p["status"] == "COMPLETED"), None)
+        assert target, "need COMPLETED project with thumbnail briefs"
+        full = creator_session.get(f"{BASE_URL}/api/projects/{target['id']}", timeout=20).json()
+        briefs = [a for a in full["assets"] if a.get("asset_type") == "thumbnail_concept"]
+        assert briefs, "completed project has no thumbnail_concept briefs"
+        merged = dict(full["project"]); merged["briefs"] = briefs; merged["assets"] = full["assets"]
+        return merged
+
+    @pytest.fixture(scope="class")
+    def second_creator(self):
+        s = requests.Session()
+        email = f"TEST_th_{uuid.uuid4().hex[:8]}@facelessforge.io"
+        r = s.post(f"{BASE_URL}/api/auth/register",
+                   json={"name": "Th Tester", "email": email,
+                         "password": "pw123456", "role": "creator"}, timeout=20)
+        assert r.status_code == 200
+        return s
+
+    _created_thumb_ids: list = []
+
+    @pytest.fixture(scope="class", autouse=True)
+    def _cleanup(self, creator_session, target_project):
+        yield
+        pid = target_project["id"]
+        try:
+            g = creator_session.get(f"{BASE_URL}/api/projects/{pid}", timeout=20).json()
+            for a in g.get("assets", []):
+                if a.get("asset_type") == "generated_thumbnail":
+                    creator_session.delete(f"{BASE_URL}/api/projects/{pid}/assets/{a['id']}", timeout=10)
+            from pymongo import MongoClient
+            mc = MongoClient(os.environ["MONGO_URL"])
+            mc[os.environ["DB_NAME"]].projects.update_one(
+                {"id": pid}, {"$set": {"selected_thumbnail_asset_id": None}})
+            mc.close()
+        except Exception:
+            pass
+
+    def test_thumbnails_meta(self, creator_session):
+        r = creator_session.get(f"{BASE_URL}/api/thumbnails/meta", timeout=15)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["mock"] is True
+        assert d["provider"] == "gemini_nano_banana"
+        assert d["model"] == "gemini-3.1-flash-image-preview"
+
+    def test_generate_variants_1(self, creator_session, target_project):
+        pid = target_project["id"]
+        brief_id = target_project["briefs"][0]["id"]
+        r = creator_session.post(
+            f"{BASE_URL}/api/projects/{pid}/thumbnails/{brief_id}/generate",
+            json={"variants": 1}, timeout=60)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        all_assets = d.get("assets") or []
+        assets = [a for a in all_assets
+                  if a.get("asset_type") == "generated_thumbnail"
+                  and a.get("brief_asset_id") == brief_id]
+        assert len(assets) == 1, f"expected 1, got {len(assets)}"
+        a = assets[0]
+        self._created_thumb_ids.append((pid, a["id"]))
+        assert a["width"] == 1280 and a["height"] == 720
+        assert a["status"] == "generated"
+        assert a.get("mock") is True
+        assert a.get("prompt")
+        assert a.get("provider") == "gemini_nano_banana"
+        assert a.get("model") == "gemini-3.1-flash-image-preview"
+        assert a.get("preview_path", "").startswith("/api/static/thumbs/")
+
+    def test_generate_variants_3_and_file_served(self, creator_session, target_project):
+        pid = target_project["id"]
+        brief_id = target_project["briefs"][0]["id"]
+        before = creator_session.get(f"{BASE_URL}/api/projects/{pid}", timeout=15).json()
+        before_ids = {a["id"] for a in before["assets"]
+                      if a.get("asset_type") == "generated_thumbnail"}
+        r = creator_session.post(
+            f"{BASE_URL}/api/projects/{pid}/thumbnails/{brief_id}/generate",
+            json={"variants": 3}, timeout=60)
+        assert r.status_code == 200
+        d = r.json()
+        new_assets = [a for a in d.get("assets", [])
+                      if a.get("asset_type") == "generated_thumbnail"
+                      and a["id"] not in before_ids
+                      and a.get("brief_asset_id") == brief_id]
+        assert len(new_assets) == 3, f"expected 3 new, got {len(new_assets)}"
+        a = new_assets[0]
+        for x in new_assets:
+            self._created_thumb_ids.append((pid, x["id"]))
+        fp = a.get("file_path")
+        assert fp and os.path.exists(fp)
+        assert os.path.getsize(fp) > 0
+        rel = a["preview_path"]
+        url = f"{BASE_URL}{rel}"
+        resp = requests.get(url, timeout=15)
+        assert resp.status_code == 200
+        assert len(resp.content) > 0
+
+    def test_generate_unknown_brief_404(self, creator_session, target_project):
+        r = creator_session.post(
+            f"{BASE_URL}/api/projects/{target_project['id']}/thumbnails/not-a-real-brief/generate",
+            json={"variants": 1}, timeout=20)
+        assert r.status_code == 404
+
+    def test_generate_variants_capped(self, creator_session, target_project):
+        brief_id = target_project["briefs"][0]["id"]
+        r = creator_session.post(
+            f"{BASE_URL}/api/projects/{target_project['id']}/thumbnails/{brief_id}/generate",
+            json={"variants": 5}, timeout=20)
+        assert r.status_code == 422
+
+    def test_generate_cross_user_403(self, second_creator, target_project):
+        brief_id = target_project["briefs"][0]["id"]
+        r = second_creator.post(
+            f"{BASE_URL}/api/projects/{target_project['id']}/thumbnails/{brief_id}/generate",
+            json={"variants": 1}, timeout=20)
+        assert r.status_code == 403
+
+    def test_select_reject_and_share_surface(self, creator_session, target_project):
+        pid = target_project["id"]
+        brief_id = target_project["briefs"][0]["id"]
+        before = creator_session.get(f"{BASE_URL}/api/projects/{pid}", timeout=15).json()
+        before_ids = {a["id"] for a in before["assets"]
+                      if a.get("asset_type") == "generated_thumbnail"}
+        # Generate two thumbs
+        r = creator_session.post(
+            f"{BASE_URL}/api/projects/{pid}/thumbnails/{brief_id}/generate",
+            json={"variants": 2}, timeout=60).json()
+        new_assets = [a for a in r.get("assets", [])
+                      if a.get("asset_type") == "generated_thumbnail"
+                      and a["id"] not in before_ids
+                      and a.get("brief_asset_id") == brief_id]
+        assert len(new_assets) == 2, f"expected 2 new thumbs, got {len(new_assets)}"
+        a1, a2 = new_assets[0]["id"], new_assets[1]["id"]
+        self._created_thumb_ids.extend([(pid, a1), (pid, a2)])
+
+        # Select a1
+        s1 = creator_session.post(f"{BASE_URL}/api/projects/{pid}/thumbnails/{a1}/select", timeout=20)
+        assert s1.status_code == 200
+        # Project view reflects
+        pv = creator_session.get(f"{BASE_URL}/api/projects/{pid}", timeout=15).json()
+        assert pv["project"].get("selected_thumbnail_asset_id") == a1
+        a1_doc = next(a for a in pv["assets"] if a["id"] == a1)
+        assert a1_doc["status"] == "selected"
+
+        # Select a2 — a1 must be demoted
+        s2 = creator_session.post(f"{BASE_URL}/api/projects/{pid}/thumbnails/{a2}/select", timeout=20)
+        assert s2.status_code == 200
+        pv = creator_session.get(f"{BASE_URL}/api/projects/{pid}", timeout=15).json()
+        assert pv["project"]["selected_thumbnail_asset_id"] == a2
+        a1_doc = next(a for a in pv["assets"] if a["id"] == a1)
+        a2_doc = next(a for a in pv["assets"] if a["id"] == a2)
+        assert a1_doc["status"] == "generated"
+        assert a2_doc["status"] == "selected"
+
+        # Public share includes selected_thumbnail_url
+        en = creator_session.post(f"{BASE_URL}/api/projects/{pid}/share", json={}, timeout=15).json()
+        token = en["token"]
+        pub = requests.get(f"{BASE_URL}/api/public/share/{token}", timeout=15).json()
+        assert pub.get("selected_thumbnail_url")
+        assert "/api/static/thumbs/" in pub["selected_thumbnail_url"]
+
+        # Reject a2 — clears selected_thumbnail_asset_id
+        rj = creator_session.post(f"{BASE_URL}/api/projects/{pid}/thumbnails/{a2}/reject", timeout=20)
+        assert rj.status_code == 200
+        pv = creator_session.get(f"{BASE_URL}/api/projects/{pid}", timeout=15).json()
+        assert pv["project"].get("selected_thumbnail_asset_id") in (None, "")
+        a2_doc = next(a for a in pv["assets"] if a["id"] == a2)
+        assert a2_doc["status"] == "rejected"
+
+        # Public share now has selected_thumbnail_url = None
+        pub2 = requests.get(f"{BASE_URL}/api/public/share/{token}", timeout=15).json()
+        assert pub2.get("selected_thumbnail_url") in (None, "")
+
+        # disable share
+        creator_session.delete(f"{BASE_URL}/api/projects/{pid}/share", timeout=15)
+

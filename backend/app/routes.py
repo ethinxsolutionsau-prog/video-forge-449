@@ -23,10 +23,12 @@ from .models import (
     ScriptUpdate, MetadataUpdate, ProviderSettingsUpdate, AssetCreate,
     ShareUpdate, ForgotPasswordRequest, ResetPasswordRequest,
     StockAttachRequest, FindAssetsRequest, AssetStatusUpdate,
+    AutoAttachRequest, GenerateThumbnailImagesRequest,
 )
 from .scoring import quality_score, quality_label, compute_project_status, scenes_to_csv
 from . import generation as gen
 from . import stock as stock_service
+from . import thumbnail_images as thumb_images
 
 
 router = APIRouter(prefix="/api")
@@ -662,6 +664,220 @@ async def attach_scene_asset(project_id: str, scene_id: str, body: StockAttachRe
     return _ser(doc)
 
 
+# ---- Auto-attach top result per scene ----
+
+@router.post("/projects/{project_id}/auto-attach-assets")
+async def auto_attach_assets(project_id: str, body: AutoAttachRequest, user=Depends(get_current_user)):
+    """Iterate scenes and attach the top stock result per scene.
+    Skips scenes that already have stock assets unless replace_existing=true.
+    """
+    db = get_db()
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    _ensure_project_access(project, user, write=True)
+    if user["role"] == "viewer":
+        raise HTTPException(status_code=403, detail="Viewer cannot attach assets")
+
+    scenes = await db.scenes.find({"project_id": project_id}, {"_id": 0}).sort("scene_number", 1).to_list(500)
+    if not scenes:
+        raise HTTPException(status_code=400, detail="Generate scenes before auto-attach.")
+
+    total = len(scenes)
+    attached = 0
+    skipped = 0
+    failed = 0
+    details: list[dict] = []
+
+    for scene in scenes:
+        scene_id = scene["id"]
+        existing = await db.assets.find_one({
+            "project_id": project_id,
+            "scene_id": scene_id,
+            "asset_type": {"$in": ["stock_video", "stock_image"]},
+        }, {"_id": 0})
+
+        if existing and not body.replace_existing:
+            skipped += 1
+            details.append({"scene_id": scene_id, "scene_number": scene["scene_number"], "status": "skipped", "reason": "already_has_stock"})
+            continue
+
+        # Build query
+        query_parts = []
+        if scene.get("search_terms"):
+            query_parts.append(" ".join(scene["search_terms"][:3]))
+        elif scene.get("visual_direction"):
+            query_parts.append(scene["visual_direction"][:80])
+        else:
+            query_parts.append(project.get("topic") or project.get("niche") or "stock")
+        query = " ".join(q for q in query_parts if q).strip() or "stock"
+
+        try:
+            result = await stock_service.search_stock(query, body.media_type, per_page=4)
+            top = (result.get("results") or [None])[0]
+            if not top:
+                failed += 1
+                details.append({"scene_id": scene_id, "scene_number": scene["scene_number"], "status": "failed", "reason": "no_results"})
+                continue
+
+            # If replacing, remove prior stock assets for this scene first
+            if existing and body.replace_existing:
+                await db.assets.delete_many({
+                    "project_id": project_id,
+                    "scene_id": scene_id,
+                    "asset_type": {"$in": ["stock_video", "stock_image"]},
+                })
+
+            doc = {
+                "id": str(uuid.uuid4()),
+                "project_id": project_id,
+                "scene_id": scene_id,
+                "name": top["title"],
+                "asset_type": top["media_type"],
+                "file_path": None,
+                "source": top["source"],
+                "external_id": top["external_id"],
+                "preview_url": top.get("preview_url"),
+                "source_url": top.get("source_url"),
+                "download_url": top.get("download_url"),
+                "attribution_name": top.get("attribution_name"),
+                "attribution_url": top.get("attribution_url"),
+                "width": top.get("width"),
+                "height": top.get("height"),
+                "duration": top.get("duration"),
+                "tags": top.get("tags") or [],
+                "query": query,
+                "status": "attached",
+                "created_at": _now(),
+                "updated_at": _now(),
+            }
+            try:
+                await db.assets.insert_one(doc)
+                attached += 1
+                details.append({"scene_id": scene_id, "scene_number": scene["scene_number"], "status": "attached", "asset_id": doc["id"]})
+            except Exception as insert_err:  # DuplicateKeyError from compound unique index
+                # Treat as skipped — another actor already attached the same item
+                skipped += 1
+                details.append({"scene_id": scene_id, "scene_number": scene["scene_number"], "status": "skipped", "reason": "duplicate"})
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            details.append({"scene_id": scene_id, "scene_number": scene["scene_number"], "status": "failed", "reason": str(e)[:120]})
+
+    return {
+        "total": total,
+        "attached": attached,
+        "skipped": skipped,
+        "failed": failed,
+        "details": details,
+        "mock": stock_service.is_mock_mode(),
+    }
+
+
+# ============================ THUMBNAIL IMAGE GENERATION ============================
+
+@router.get("/thumbnails/meta")
+async def thumbnails_meta(user=Depends(get_current_user)):
+    return thumb_images.provider_info()
+
+
+@router.post("/projects/{project_id}/thumbnails/{brief_asset_id}/generate")
+async def generate_thumbnail_image_endpoint(
+    project_id: str, brief_asset_id: str,
+    body: GenerateThumbnailImagesRequest,
+    user=Depends(get_current_user),
+):
+    db = get_db()
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    _ensure_project_access(project, user, write=True)
+    if user["role"] == "viewer":
+        raise HTTPException(status_code=403, detail="Viewer cannot generate images")
+    brief_asset = await db.assets.find_one(
+        {"id": brief_asset_id, "project_id": project_id, "asset_type": "thumbnail_concept"},
+        {"_id": 0},
+    )
+    if not brief_asset:
+        raise HTTPException(status_code=404, detail="Thumbnail brief not found")
+    brief = brief_asset.get("brief") or {}
+
+    generated = await thumb_images.generate_thumbnail_images(
+        project, brief, variants=body.variants, project_id=project_id,
+    )
+    if not generated:
+        raise HTTPException(status_code=502, detail="Image generation failed. Please retry.")
+
+    now = _now()
+    inserts = []
+    for g in generated:
+        g["brief_asset_id"] = brief_asset_id
+        g["created_at"] = now
+        g["updated_at"] = now
+        inserts.append(dict(g))
+    await db.assets.insert_many([dict(d) for d in inserts])
+
+    est_cost = 0.02 * len(generated) if not generated[0].get("mock") else 0
+    if est_cost:
+        await db.projects.update_one(
+            {"id": project_id},
+            {"$set": {"estimated_cost": float(project.get("estimated_cost", 0)) + est_cost, "updated_at": now}},
+        )
+    return await _attach_project_view(db, await db.projects.find_one({"id": project_id}, {"_id": 0}))
+
+
+@router.post("/projects/{project_id}/thumbnails/{asset_id}/select")
+async def select_thumbnail(project_id: str, asset_id: str, user=Depends(get_current_user)):
+    db = get_db()
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    _ensure_project_access(project, user, write=True)
+    if user["role"] == "viewer":
+        raise HTTPException(status_code=403, detail="Viewer cannot select thumbnails")
+    asset = await db.assets.find_one(
+        {"id": asset_id, "project_id": project_id, "asset_type": "generated_thumbnail"},
+        {"_id": 0},
+    )
+    if not asset:
+        raise HTTPException(status_code=404, detail="Generated thumbnail not found")
+    now = _now()
+    # Demote any currently selected thumbnail
+    await db.assets.update_many(
+        {"project_id": project_id, "asset_type": "generated_thumbnail", "status": "selected"},
+        {"$set": {"status": "generated", "updated_at": now}},
+    )
+    await db.assets.update_one(
+        {"id": asset_id, "project_id": project_id},
+        {"$set": {"status": "selected", "updated_at": now}},
+    )
+    await db.projects.update_one(
+        {"id": project_id},
+        {"$set": {"selected_thumbnail_asset_id": asset_id, "updated_at": now}},
+    )
+    return await _attach_project_view(db, await db.projects.find_one({"id": project_id}, {"_id": 0}))
+
+
+@router.post("/projects/{project_id}/thumbnails/{asset_id}/reject")
+async def reject_thumbnail(project_id: str, asset_id: str, user=Depends(get_current_user)):
+    db = get_db()
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    _ensure_project_access(project, user, write=True)
+    if user["role"] == "viewer":
+        raise HTTPException(status_code=403, detail="Viewer cannot reject thumbnails")
+    asset = await db.assets.find_one(
+        {"id": asset_id, "project_id": project_id, "asset_type": "generated_thumbnail"},
+        {"_id": 0},
+    )
+    if not asset:
+        raise HTTPException(status_code=404, detail="Generated thumbnail not found")
+    now = _now()
+    await db.assets.update_one(
+        {"id": asset_id, "project_id": project_id},
+        {"$set": {"status": "rejected", "updated_at": now}},
+    )
+    # If the rejected one was selected, clear project pointer
+    if project.get("selected_thumbnail_asset_id") == asset_id:
+        await db.projects.update_one(
+            {"id": project_id},
+            {"$set": {"selected_thumbnail_asset_id": None, "updated_at": now}},
+        )
+    return await _attach_project_view(db, await db.projects.find_one({"id": project_id}, {"_id": 0}))
+
+
 # ============================ EXPORTS ============================
 
 @router.get("/projects/{project_id}/export/script.txt")
@@ -933,6 +1149,13 @@ async def public_share(token: str):
     thumbnails = await db.assets.find(
         {"project_id": project["id"], "asset_type": "thumbnail_concept"}, {"_id": 0}
     ).to_list(10)
+    # Selected generated thumbnail (if any)
+    selected_thumb = None
+    if project.get("selected_thumbnail_asset_id"):
+        selected_thumb = await db.assets.find_one(
+            {"id": project["selected_thumbnail_asset_id"], "project_id": project["id"]},
+            {"_id": 0},
+        )
 
     # Increment view count and update last viewed
     await db.projects.update_one(
@@ -965,6 +1188,7 @@ async def public_share(token: str):
             {"name": t.get("name"), "brief": t.get("brief")}
             for t in thumbnails if t.get("brief")
         ],
+        "selected_thumbnail_url": selected_thumb.get("preview_url") if selected_thumb else None,
         "shared_at": project.get("updated_at").isoformat()
             if isinstance(project.get("updated_at"), datetime) else project.get("updated_at"),
     }

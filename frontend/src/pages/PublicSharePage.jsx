@@ -36,11 +36,12 @@ function useShareSocialMeta(data, url) {
     const desc = data.metadata?.description
       ? (data.metadata.description.slice(0, 240) + (data.metadata.description.length > 240 ? "…" : ""))
       : `Created with FacelessForge · quality ${data.quality_score}/100 · ${data.niche}`;
+    const image = data.selected_thumbnail_url || `${window.location.origin}/og-share-default.svg`;
     const og = {
       title: `${title} · FacelessForge`,
       description: desc,
       url,
-      image: `${window.location.origin}/og-share-default.svg`,
+      image,
       type: "article",
       site: "FacelessForge",
     };
@@ -130,7 +131,7 @@ export default function PublicSharePage() {
     );
   }
 
-  const { display_title, project_name, niche, status, quality_score, metadata, thumbnails } = data;
+  const { display_title, project_name, niche, status, quality_score, metadata, thumbnails, selected_thumbnail_url } = data;
   const color = qualityColor(quality_score);
 
   return (
@@ -149,6 +150,18 @@ export default function PublicSharePage() {
             <StatusBadge status={status} />
             <span className="font-mono text-[10px] uppercase tracking-widest text-zinc-500">{niche}</span>
           </div>
+
+          {selected_thumbnail_url && (
+            <div className="mb-10 border border-zinc-800 rounded-sm overflow-hidden bg-[#121212]" data-testid="share-hero-thumbnail">
+              <img
+                src={selected_thumbnail_url}
+                alt={display_title}
+                className="w-full h-auto block"
+                style={{ aspectRatio: "16 / 9", objectFit: "cover" }}
+                loading="eager"
+              />
+            </div>
+          )}
 
           <h1 data-testid="share-display-title" className="text-3xl md:text-5xl font-bold tracking-tight leading-[1.1] max-w-4xl">
             {display_title}

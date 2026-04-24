@@ -200,6 +200,16 @@ class AssetStatusUpdate(BaseModel):
     status: Literal["suggested", "attached", "rejected", "selected", "ready"]
 
 
+# ---------- Auto-attach / Thumbnail images ----------
+class AutoAttachRequest(BaseModel):
+    replace_existing: bool = False
+    media_type: Literal["both", "videos", "photos"] = "both"
+
+
+class GenerateThumbnailImagesRequest(BaseModel):
+    variants: int = Field(default=1, ge=1, le=3)
+
+
 # ---------- Share ----------
 class ShareUpdate(BaseModel):
     title_override: Optional[str] = Field(default=None, max_length=200)

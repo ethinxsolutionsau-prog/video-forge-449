@@ -229,7 +229,13 @@ export default function ProjectDetailPage() {
             <MetadataPanel projectId={project.id} metadata={metadata} canEdit={canEdit} onChange={setView} hasScript={!!script} />
           )}
           {tab === "thumbnails" && (
-            <ThumbnailPanel projectId={project.id} assets={assets} canEdit={canEdit} onChange={setView} />
+            <ThumbnailPanel
+              projectId={project.id}
+              assets={assets}
+              selectedThumbnailId={project.selected_thumbnail_asset_id}
+              canEdit={canEdit}
+              onChange={setView}
+            />
           )}
           {tab === "render" && (
             <RenderPanel
