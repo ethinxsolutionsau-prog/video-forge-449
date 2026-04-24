@@ -1,11 +1,13 @@
 import React, { useState } from "react";
 import { toast } from "sonner";
-import { Sparkles, Loader2, Download } from "lucide-react";
+import { Sparkles, Loader2, Download, Search, X as XIcon } from "lucide-react";
 import { api, formatApiError, API } from "../lib/api";
 import { formatDuration } from "../lib/format";
+import StockAssetModal from "./StockAssetModal";
 
-export default function ScenePlanner({ projectId, scenes, canEdit, onChange, hasScript }) {
+export default function ScenePlanner({ projectId, scenes, canEdit, onChange, hasScript, attachedAssets = [] }) {
   const [generating, setGenerating] = useState(false);
+  const [activeScene, setActiveScene] = useState(null);
 
   const generate = async () => {
     setGenerating(true);
@@ -24,6 +26,22 @@ export default function ScenePlanner({ projectId, scenes, canEdit, onChange, has
   const exportCsv = () => {
     window.open(`${API}/projects/${projectId}/export/scenes.csv`, "_blank");
   };
+
+  const detach = async (asset) => {
+    try {
+      await api.delete(`/projects/${projectId}/assets/${asset.id}`);
+      toast.success("Asset detached");
+      const { data } = await api.get(`/projects/${projectId}`);
+      onChange(data);
+    } catch (err) {
+      toast.error("Detach failed", { description: formatApiError(err.response?.data?.detail) || err.message });
+    }
+  };
+
+  const assetsForScene = (sceneId) =>
+    (attachedAssets || []).filter(
+      (a) => a.scene_id === sceneId && (a.asset_type === "stock_video" || a.asset_type === "stock_image")
+    );
 
   if (!scenes || scenes.length === 0) {
     return (
@@ -82,38 +100,94 @@ export default function ScenePlanner({ projectId, scenes, canEdit, onChange, has
               <th className="text-left px-4 py-3 w-28">Time</th>
               <th className="text-left px-4 py-3">Narration</th>
               <th className="text-left px-4 py-3 w-64">Visual · asset</th>
-              <th className="text-left px-4 py-3 w-56">Caption</th>
+              <th className="text-left px-4 py-3 w-56">Caption & assets</th>
             </tr>
           </thead>
           <tbody>
-            {scenes.map((s) => (
-              <tr key={s.id} className="border-b border-zinc-800 hover:bg-[#1A1A1A] transition-colors align-top">
-                <td className="px-4 py-3 font-mono text-[#00E5FF] text-xs">{String(s.scene_number).padStart(2, "0")}</td>
-                <td className="px-4 py-3 font-mono text-xs text-zinc-400">
-                  {formatDuration(s.start_time)} → {formatDuration(s.end_time)}
-                </td>
-                <td className="px-4 py-3 text-zinc-200 leading-relaxed">{s.narration_text}</td>
-                <td className="px-4 py-3">
-                  <div className="text-zinc-300 mb-1">{s.visual_direction}</div>
-                  <div className="font-mono text-[10px] uppercase tracking-widest text-[#7B61FF]">
-                    {s.asset_type.replace(/_/g, " ")}
-                  </div>
-                  {s.search_terms?.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {s.search_terms.map((t, i) => (
-                        <span key={i} className="font-mono text-[10px] px-1.5 py-0.5 border border-zinc-800 text-zinc-400 rounded-sm">
-                          {t}
-                        </span>
-                      ))}
+            {scenes.map((s) => {
+              const sceneAssets = assetsForScene(s.id);
+              return (
+                <tr key={s.id} className="border-b border-zinc-800 hover:bg-[#1A1A1A] transition-colors align-top">
+                  <td className="px-4 py-3 font-mono text-[#00E5FF] text-xs">{String(s.scene_number).padStart(2, "0")}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-zinc-400">
+                    {formatDuration(s.start_time)} → {formatDuration(s.end_time)}
+                  </td>
+                  <td className="px-4 py-3 text-zinc-200 leading-relaxed">{s.narration_text}</td>
+                  <td className="px-4 py-3">
+                    <div className="text-zinc-300 mb-1">{s.visual_direction}</div>
+                    <div className="font-mono text-[10px] uppercase tracking-widest text-[#7B61FF]">
+                      {s.asset_type.replace(/_/g, " ")}
                     </div>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-zinc-300 italic">"{s.caption_text}"</td>
-              </tr>
-            ))}
+                    {s.search_terms?.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {s.search_terms.map((t, i) => (
+                          <span key={i} className="font-mono text-[10px] px-1.5 py-0.5 border border-zinc-800 text-zinc-400 rounded-sm">
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 space-y-2">
+                    <div className="text-zinc-300 italic">"{s.caption_text}"</div>
+                    {sceneAssets.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {sceneAssets.map((a) => (
+                          <div
+                            key={a.id}
+                            data-testid={`scene-asset-${a.id}`}
+                            className="group relative w-16 h-10 overflow-hidden border border-[#00FF66]/30 rounded-sm"
+                            title={`${a.name} · ${a.attribution_name || ""}`}
+                          >
+                            {a.preview_url ? (
+                              <img src={a.preview_url} alt="" className="w-full h-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
+                            ) : (
+                              <div className="w-full h-full bg-[#1A1A1A]" />
+                            )}
+                            {canEdit && (
+                              <button
+                                data-testid={`detach-asset-${a.id}`}
+                                onClick={() => detach(a)}
+                                className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center text-[#FF3366] transition-opacity"
+                              >
+                                <XIcon size={14} strokeWidth={2} />
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {canEdit && (
+                      <button
+                        data-testid={`find-assets-btn-${s.id}`}
+                        onClick={() => setActiveScene(s)}
+                        className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-widest text-[#00E5FF] hover:text-white border border-[#00E5FF]/30 hover:border-[#00E5FF] px-2 py-1 rounded-sm transition-colors"
+                      >
+                        <Search size={11} strokeWidth={1.5} />
+                        {sceneAssets.length > 0 ? "Find more" : "Find Assets"}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
+
+      {activeScene && (
+        <StockAssetModal
+          open={!!activeScene}
+          onOpenChange={(o) => !o && setActiveScene(null)}
+          projectId={projectId}
+          scene={activeScene}
+          onAttached={async () => {
+            const { data } = await api.get(`/projects/${projectId}`);
+            onChange(data);
+          }}
+        />
+      )}
     </div>
   );
 }
+

@@ -709,3 +709,295 @@ class TestForgotPassword:
         r = requests.post(f"{BASE_URL}/api/auth/forgot-password",
                           json={"email": "not-an-email"}, timeout=15)
         assert r.status_code == 422
+
+
+# =========================================================================
+# Phase 3 — Pexels stock-footage fetcher (mock-first)
+# Covers: /api/stock/meta, /stock-search, /find-assets, /attach-asset,
+# PATCH/DELETE asset status, cross-user 403, duplicate 409, mock determinism.
+# =========================================================================
+class TestStockFetcher:
+    """Stock (Pexels/mock) search, attach, patch, delete flows."""
+
+    @pytest.fixture(scope="class")
+    def target_project(self, creator_session):
+        r = creator_session.get(f"{BASE_URL}/api/projects", timeout=20)
+        assert r.status_code == 200
+        projects = r.json()
+        # Prefer a COMPLETED project (has scenes with search_terms)
+        target = next((p for p in projects if p["status"] == "COMPLETED"), None) or \
+                 next((p for p in projects if p["status"] in ("SCENES_GENERATED",)), None) or \
+                 projects[0]
+        full = creator_session.get(f"{BASE_URL}/api/projects/{target['id']}", timeout=20).json()
+        assert full.get("scenes"), "target project has no scenes"
+        # Flatten {project:..., scenes:..., assets:...} into a single dict for easier access
+        merged = dict(full.get("project") or {})
+        merged["scenes"] = full.get("scenes") or []
+        merged["assets"] = full.get("assets") or []
+        return merged
+
+    @pytest.fixture(scope="class")
+    def second_creator(self):
+        """Register a second creator to test cross-user forbidden access."""
+        s = requests.Session()
+        email = f"TEST_stock2_{uuid.uuid4().hex[:8]}@facelessforge.io"
+        r = s.post(f"{BASE_URL}/api/auth/register",
+                   json={"name": "Stock Tester 2", "email": email,
+                         "password": "stocktest123", "role": "creator"}, timeout=20)
+        assert r.status_code in (200, 201)
+        return s
+
+    # Track created asset ids for teardown
+    _created_asset_ids: list[tuple] = []  # (project_id, asset_id)
+
+    @pytest.fixture(scope="class", autouse=True)
+    def _cleanup(self, creator_session, target_project):
+        yield
+        for pid, aid in self._created_asset_ids:
+            try:
+                creator_session.delete(f"{BASE_URL}/api/projects/{pid}/assets/{aid}", timeout=15)
+            except Exception:
+                pass
+
+    # ---- 1. /stock/meta returns {mock: true} ----
+    def test_stock_meta_mock_mode(self, creator_session):
+        r = creator_session.get(f"{BASE_URL}/api/stock/meta", timeout=15)
+        assert r.status_code == 200
+        body = r.json()
+        assert body.get("mock") is True
+
+    # ---- 2. POST /stock-search returns deterministic shape ----
+    def test_stock_search_shape_and_determinism(self, creator_session, target_project):
+        pid = target_project["id"]
+        body = {"query": "ocean sunset waves", "media_type": "both", "per_page": 8}
+        r1 = creator_session.post(f"{BASE_URL}/api/projects/{pid}/stock-search", json=body, timeout=20)
+        assert r1.status_code == 200, r1.text
+        d1 = r1.json()
+        assert d1["source"] == "mock"
+        assert d1["mock"] is True
+        assert d1["query"] == "ocean sunset waves"
+        assert isinstance(d1["results"], list) and len(d1["results"]) >= 4
+        first = d1["results"][0]
+        for k in ("source", "external_id", "media_type", "title", "preview_url",
+                  "source_url", "attribution_name", "attribution_url", "width", "height"):
+            assert k in first, f"missing {k}"
+        # Determinism: same query -> same external ids
+        r2 = creator_session.post(f"{BASE_URL}/api/projects/{pid}/stock-search", json=body, timeout=20)
+        ids1 = [x["external_id"] for x in d1["results"]]
+        ids2 = [x["external_id"] for x in r2.json()["results"]]
+        assert ids1 == ids2, "mock results not deterministic"
+
+    # ---- 3. Empty query on /stock-search with project having topic -> falls back OK; truly empty -> 400 ----
+    def test_stock_search_empty_query_uses_topic(self, creator_session, target_project):
+        pid = target_project["id"]
+        r = creator_session.post(f"{BASE_URL}/api/projects/{pid}/stock-search",
+                                 json={"query": "", "media_type": "both", "per_page": 4}, timeout=20)
+        # Should succeed via project.topic fallback (project has topic)
+        assert r.status_code == 200, r.text
+        assert len(r.json()["results"]) >= 4
+
+    # ---- 4. find-assets auto-builds query from search_terms ----
+    def test_find_assets_auto_query_from_search_terms(self, creator_session, target_project):
+        pid = target_project["id"]
+        scene = target_project["scenes"][0]
+        sid = scene["id"]
+        r = creator_session.post(
+            f"{BASE_URL}/api/projects/{pid}/scenes/{sid}/find-assets",
+            json={"query": "", "media_type": "both", "per_page": 8}, timeout=25,
+        )
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["mock"] is True
+        assert len(d["results"]) >= 4
+        # Query should reflect scene.search_terms join
+        expected_query = " ".join(scene["search_terms"][:3])
+        assert d["query"] == expected_query
+
+    # ---- 5. find-assets respects media_type filter ----
+    def test_find_assets_media_type_photos(self, creator_session, target_project):
+        pid = target_project["id"]
+        sid = target_project["scenes"][0]["id"]
+        r = creator_session.post(
+            f"{BASE_URL}/api/projects/{pid}/scenes/{sid}/find-assets",
+            json={"query": "city skyline", "media_type": "photos", "per_page": 6}, timeout=25,
+        )
+        assert r.status_code == 200
+        kinds = {x["media_type"] for x in r.json()["results"]}
+        assert kinds == {"stock_image"}, kinds
+
+    def test_find_assets_media_type_videos(self, creator_session, target_project):
+        pid = target_project["id"]
+        sid = target_project["scenes"][0]["id"]
+        r = creator_session.post(
+            f"{BASE_URL}/api/projects/{pid}/scenes/{sid}/find-assets",
+            json={"query": "city skyline", "media_type": "videos", "per_page": 6}, timeout=25,
+        )
+        assert r.status_code == 200
+        kinds = {x["media_type"] for x in r.json()["results"]}
+        assert kinds == {"stock_video"}, kinds
+
+    def test_find_assets_media_type_both_mixes(self, creator_session, target_project):
+        pid = target_project["id"]
+        sid = target_project["scenes"][0]["id"]
+        r = creator_session.post(
+            f"{BASE_URL}/api/projects/{pid}/scenes/{sid}/find-assets",
+            json={"query": "city skyline", "media_type": "both", "per_page": 8}, timeout=25,
+        )
+        assert r.status_code == 200
+        kinds = {x["media_type"] for x in r.json()["results"]}
+        assert kinds == {"stock_image", "stock_video"}, kinds
+
+    # ---- 6. find-assets on non-existent scene -> 404 ----
+    def test_find_assets_unknown_scene_404(self, creator_session, target_project):
+        pid = target_project["id"]
+        r = creator_session.post(
+            f"{BASE_URL}/api/projects/{pid}/scenes/does-not-exist/find-assets",
+            json={"query": "x", "media_type": "both", "per_page": 4}, timeout=15,
+        )
+        assert r.status_code == 404
+
+    # ---- 7. find-assets cross-user -> 403 (project-level) ----
+    def test_find_assets_cross_user_forbidden(self, second_creator, target_project):
+        pid = target_project["id"]
+        sid = target_project["scenes"][0]["id"]
+        r = second_creator.post(
+            f"{BASE_URL}/api/projects/{pid}/scenes/{sid}/find-assets",
+            json={"query": "x", "media_type": "both", "per_page": 4}, timeout=15,
+        )
+        assert r.status_code == 403
+
+    # ---- 8. attach-asset creates asset; duplicate -> 409; PATCH & GET verify ----
+    def test_attach_patch_delete_full_flow(self, creator_session, target_project):
+        pid = target_project["id"]
+        sid = target_project["scenes"][1]["id"]
+        # Get a mock result first
+        search = creator_session.post(
+            f"{BASE_URL}/api/projects/{pid}/scenes/{sid}/find-assets",
+            json={"query": "TEST_attach_flow_unique_query", "media_type": "photos", "per_page": 6}, timeout=20,
+        ).json()
+        item = search["results"][0]
+        attach_body = {
+            "source": item["source"], "external_id": item["external_id"],
+            "media_type": item["media_type"], "title": item["title"],
+            "preview_url": item["preview_url"], "source_url": item["source_url"],
+            "download_url": item.get("download_url"),
+            "attribution_name": item["attribution_name"],
+            "attribution_url": item["attribution_url"],
+            "width": item["width"], "height": item["height"],
+            "duration": item.get("duration"),
+            "tags": item["tags"], "query": item["query"],
+        }
+        r = creator_session.post(
+            f"{BASE_URL}/api/projects/{pid}/scenes/{sid}/attach-asset",
+            json=attach_body, timeout=20,
+        )
+        assert r.status_code == 200, r.text
+        asset = r.json()
+        self._created_asset_ids.append((pid, asset["id"]))
+        assert asset["scene_id"] == sid
+        assert asset["external_id"] == item["external_id"]
+        assert asset["source"] == "mock"
+        assert asset["status"] == "attached"
+        assert asset["asset_type"] == "stock_image"
+        assert asset["duration"] is None  # image -> null
+        assert asset["preview_url"]
+        assert asset["attribution_name"]
+
+        # Duplicate attach -> 409
+        dup = creator_session.post(
+            f"{BASE_URL}/api/projects/{pid}/scenes/{sid}/attach-asset",
+            json=attach_body, timeout=15,
+        )
+        assert dup.status_code == 409
+
+        # PATCH status -> selected, verify GET project shows it
+        p = creator_session.patch(
+            f"{BASE_URL}/api/projects/{pid}/assets/{asset['id']}",
+            json={"status": "selected"}, timeout=15,
+        )
+        assert p.status_code == 200
+        assert p.json()["status"] == "selected"
+
+        # Attached asset visible in GET /api/projects/{pid} assets list with scene_id link
+        g = creator_session.get(f"{BASE_URL}/api/projects/{pid}", timeout=15).json()
+        assets_list = g.get("assets") or (g.get("project") or {}).get("assets") or []
+        found = next((a for a in assets_list if a["id"] == asset["id"]), None)
+        assert found is not None, "attached asset not in project.assets"
+        assert found["scene_id"] == sid
+        assert found["status"] == "selected"
+
+        # DELETE removes
+        d = creator_session.delete(f"{BASE_URL}/api/projects/{pid}/assets/{asset['id']}", timeout=15)
+        assert d.status_code == 200
+        g2 = creator_session.get(f"{BASE_URL}/api/projects/{pid}", timeout=15).json()
+        assets2 = g2.get("assets") or (g2.get("project") or {}).get("assets") or []
+        assert not any(a["id"] == asset["id"] for a in assets2), "asset still present after delete"
+        # Remove from cleanup list since already deleted
+        self._created_asset_ids = [(p, a) for (p, a) in self._created_asset_ids if a != asset["id"]]
+
+    # ---- 9. attach-asset cross-user forbidden (project-level) ----
+    def test_attach_cross_user_forbidden(self, second_creator, target_project):
+        pid = target_project["id"]
+        sid = target_project["scenes"][0]["id"]
+        body = {
+            "source": "mock", "external_id": "11111111",
+            "media_type": "stock_image", "title": "x",
+            "preview_url": "https://picsum.photos/seed/x/640/360",
+            "source_url": "https://www.pexels.com/photo/11111111/",
+            "attribution_name": "Foo", "attribution_url": "https://pexels.com/@foo",
+            "width": 1920, "height": 1080, "duration": None, "tags": ["x"], "query": "x",
+        }
+        r = second_creator.post(
+            f"{BASE_URL}/api/projects/{pid}/scenes/{sid}/attach-asset",
+            json=body, timeout=15,
+        )
+        assert r.status_code == 403
+
+    # ---- 10. attach-asset on non-existent scene -> 404 ----
+    def test_attach_unknown_scene_404(self, creator_session, target_project):
+        pid = target_project["id"]
+        body = {
+            "source": "mock", "external_id": "22222222",
+            "media_type": "stock_image", "title": "x",
+            "preview_url": "https://picsum.photos/seed/y/640/360",
+            "source_url": "https://www.pexels.com/photo/22222222/",
+            "attribution_name": "Foo", "attribution_url": "https://pexels.com/@foo",
+            "width": 1920, "height": 1080, "duration": None, "tags": ["x"], "query": "x",
+        }
+        r = creator_session.post(
+            f"{BASE_URL}/api/projects/{pid}/scenes/no-such-scene/attach-asset",
+            json=body, timeout=15,
+        )
+        assert r.status_code == 404
+
+    # ---- 11. video attach preserves duration ----
+    def test_attach_video_keeps_duration(self, creator_session, target_project):
+        pid = target_project["id"]
+        sid = target_project["scenes"][2]["id"]
+        search = creator_session.post(
+            f"{BASE_URL}/api/projects/{pid}/scenes/{sid}/find-assets",
+            json={"query": "TEST_video_duration_query", "media_type": "videos", "per_page": 4}, timeout=20,
+        ).json()
+        item = search["results"][0]
+        assert item["media_type"] == "stock_video"
+        assert isinstance(item["duration"], int)
+        body = {
+            "source": item["source"], "external_id": item["external_id"],
+            "media_type": item["media_type"], "title": item["title"],
+            "preview_url": item["preview_url"], "source_url": item["source_url"],
+            "download_url": item.get("download_url"),
+            "attribution_name": item["attribution_name"],
+            "attribution_url": item["attribution_url"],
+            "width": item["width"], "height": item["height"],
+            "duration": item.get("duration"),
+            "tags": item["tags"], "query": item["query"],
+        }
+        r = creator_session.post(
+            f"{BASE_URL}/api/projects/{pid}/scenes/{sid}/attach-asset",
+            json=body, timeout=15,
+        )
+        assert r.status_code == 200
+        asset = r.json()
+        self._created_asset_ids.append((pid, asset["id"]))
+        assert asset["asset_type"] == "stock_video"
+        assert asset["duration"] == item["duration"]

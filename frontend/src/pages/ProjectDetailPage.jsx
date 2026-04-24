@@ -223,7 +223,7 @@ export default function ProjectDetailPage() {
             <ScriptPanel projectId={project.id} script={script} canEdit={canEdit} onChange={setView} />
           )}
           {tab === "scenes" && (
-            <ScenePlanner projectId={project.id} scenes={scenes} canEdit={canEdit} onChange={setView} hasScript={!!script} />
+            <ScenePlanner projectId={project.id} scenes={scenes} canEdit={canEdit} onChange={setView} hasScript={!!script} attachedAssets={assets} />
           )}
           {tab === "metadata" && (
             <MetadataPanel projectId={project.id} metadata={metadata} canEdit={canEdit} onChange={setView} hasScript={!!script} />

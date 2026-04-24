@@ -22,9 +22,11 @@ from .models import (
     RegisterRequest, LoginRequest, ProjectCreate, ProjectUpdate,
     ScriptUpdate, MetadataUpdate, ProviderSettingsUpdate, AssetCreate,
     ShareUpdate, ForgotPasswordRequest, ResetPasswordRequest,
+    StockAttachRequest, FindAssetsRequest, AssetStatusUpdate,
 )
 from .scoring import quality_score, quality_label, compute_project_status, scenes_to_csv
 from . import generation as gen
+from . import stock as stock_service
 
 
 router = APIRouter(prefix="/api")
@@ -545,6 +547,119 @@ async def delete_asset(project_id: str, asset_id: str, user=Depends(get_current_
     _ensure_project_access(project, user, write=True)
     await db.assets.delete_one({"id": asset_id, "project_id": project_id})
     return {"ok": True}
+
+
+@router.patch("/projects/{project_id}/assets/{asset_id}")
+async def update_asset_status(project_id: str, asset_id: str, body: AssetStatusUpdate, user=Depends(get_current_user)):
+    db = get_db()
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    _ensure_project_access(project, user, write=True)
+    result = await db.assets.update_one(
+        {"id": asset_id, "project_id": project_id},
+        {"$set": {"status": body.status, "updated_at": _now()}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    asset = await db.assets.find_one({"id": asset_id, "project_id": project_id}, {"_id": 0})
+    return _ser(asset)
+
+
+# ============================ STOCK / PEXELS ============================
+
+@router.get("/stock/meta")
+async def stock_meta(user=Depends(get_current_user)):
+    """Lightweight endpoint so the UI can show 'mock mode' badge without triggering a search."""
+    return {"mock": stock_service.is_mock_mode()}
+
+
+@router.post("/projects/{project_id}/stock-search")
+async def project_stock_search(project_id: str, body: FindAssetsRequest, user=Depends(get_current_user)):
+    """Ad-hoc stock search scoped to a project (no scene context)."""
+    db = get_db()
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    _ensure_project_access(project, user)
+    query = (body.query or project.get("topic") or project.get("niche") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Provide a query or ensure project has a topic.")
+    return await stock_service.search_stock(query, body.media_type, body.per_page)
+
+
+@router.post("/projects/{project_id}/scenes/{scene_id}/find-assets")
+async def find_scene_assets(project_id: str, scene_id: str, body: FindAssetsRequest, user=Depends(get_current_user)):
+    db = get_db()
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    _ensure_project_access(project, user)
+    scene = await db.scenes.find_one({"id": scene_id, "project_id": project_id}, {"_id": 0})
+    if not scene:
+        raise HTTPException(status_code=404, detail="Scene not found")
+
+    # Build the query: explicit body.query > scene.search_terms > visual_direction > project.topic
+    query_parts: list[str] = []
+    if body.query and body.query.strip():
+        query_parts.append(body.query.strip())
+    elif scene.get("search_terms"):
+        # Use first 2-3 terms as a single query
+        query_parts.append(" ".join(scene["search_terms"][:3]))
+    elif scene.get("visual_direction"):
+        query_parts.append(scene["visual_direction"][:80])
+    else:
+        query_parts.append(project.get("topic") or project.get("niche") or "stock")
+    query = " ".join(q for q in query_parts if q).strip()
+
+    return await stock_service.search_stock(query, body.media_type, body.per_page)
+
+
+@router.post("/projects/{project_id}/scenes/{scene_id}/attach-asset")
+async def attach_scene_asset(project_id: str, scene_id: str, body: StockAttachRequest, user=Depends(get_current_user)):
+    db = get_db()
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    _ensure_project_access(project, user, write=True)
+    if user["role"] == "viewer":
+        raise HTTPException(status_code=403, detail="Viewer cannot attach assets")
+    scene = await db.scenes.find_one({"id": scene_id, "project_id": project_id}, {"_id": 0})
+    if not scene:
+        raise HTTPException(status_code=404, detail="Scene not found")
+
+    # Idempotency: reject duplicates by (project_id, scene_id, external_id, source)
+    existing = await db.assets.find_one({
+        "project_id": project_id,
+        "scene_id": scene_id,
+        "external_id": body.external_id,
+        "source": body.source,
+    }, {"_id": 0})
+    if existing:
+        raise HTTPException(status_code=409, detail="This asset is already attached to the scene.")
+
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": project_id,
+        "scene_id": scene_id,
+        "name": body.title,
+        "asset_type": body.media_type,  # stock_video | stock_image
+        "file_path": None,
+        "source": body.source,
+        "external_id": body.external_id,
+        "preview_url": body.preview_url,
+        "source_url": body.source_url,
+        "download_url": body.download_url,
+        "attribution_name": body.attribution_name,
+        "attribution_url": body.attribution_url,
+        "width": body.width,
+        "height": body.height,
+        "duration": body.duration,
+        "tags": body.tags or [],
+        "query": body.query,
+        "status": "attached",
+        "created_at": _now(),
+        "updated_at": _now(),
+    }
+    await db.assets.insert_one(doc)
+    # Mark scene as having assets
+    await db.scenes.update_one(
+        {"id": scene_id, "project_id": project_id},
+        {"$set": {"status": "assets_attached", "updated_at": _now()}},
+    )
+    return _ser(doc)
 
 
 # ============================ EXPORTS ============================

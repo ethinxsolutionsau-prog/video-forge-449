@@ -44,3 +44,5 @@ async def ensure_indexes():
     await db.password_reset_tokens.create_index("token", unique=True)
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await db.password_reset_attempts.create_index("identifier")
+    # Assets
+    await db.assets.create_index([("project_id", 1), ("scene_id", 1), ("external_id", 1), ("source", 1)])

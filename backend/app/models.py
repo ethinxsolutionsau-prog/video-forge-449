@@ -2,8 +2,6 @@
 from datetime import datetime
 from typing import List, Optional, Literal
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
-
-
 # ---------- Auth ----------
 class RegisterRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
@@ -171,6 +169,35 @@ class AssetCreate(BaseModel):
     source: str = "generated_brief"
     tags: List[str] = []
     file_path: Optional[str] = None
+
+
+# ---------- Stock / Pexels ----------
+class StockAttachRequest(BaseModel):
+    """Caller sends one normalised stock result as returned by /find-assets."""
+    source: str = "pexels"
+    external_id: str
+    media_type: Literal["stock_video", "stock_image"]
+    title: str
+    preview_url: Optional[str] = None
+    source_url: Optional[str] = None
+    download_url: Optional[str] = None
+    attribution_name: Optional[str] = None
+    attribution_url: Optional[str] = None
+    width: Optional[int] = 0
+    height: Optional[int] = 0
+    duration: Optional[int] = None
+    tags: List[str] = []
+    query: Optional[str] = None
+
+
+class FindAssetsRequest(BaseModel):
+    query: Optional[str] = None
+    media_type: Literal["both", "videos", "photos"] = "both"
+    per_page: int = Field(default=12, ge=1, le=40)
+
+
+class AssetStatusUpdate(BaseModel):
+    status: Literal["suggested", "attached", "rejected", "selected", "ready"]
 
 
 # ---------- Share ----------
