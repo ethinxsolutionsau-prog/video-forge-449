@@ -529,3 +529,183 @@ class TestShareLinks:
                                json={}, timeout=15)
         assert r.status_code == 200
         assert r.json()["enabled"] is True
+
+
+# ============================ FORGOT / RESET PASSWORD ============================
+class TestForgotPassword:
+    """Forgot-password + reset-password flow. DEV_MODE=true so responses include dev_reset_token."""
+
+    @pytest.fixture(scope="class", autouse=True)
+    def cleanup_rate_limit_and_restore(self):
+        """Clear rate-limit rows for creator before tests. After all tests, restore creator password."""
+        from pymongo import MongoClient
+        from dotenv import load_dotenv
+        load_dotenv("/app/backend/.env")
+        mc = MongoClient(os.environ["MONGO_URL"])
+        db = mc[os.environ["DB_NAME"]]
+        db.password_reset_attempts.delete_many({"email": CREATOR_EMAIL})
+        db.password_reset_attempts.delete_many({"email": "ghost_no_user_xyz@facelessforge.io"})
+        db.password_reset_tokens.delete_many({"email": CREATOR_EMAIL})
+        yield
+        # Restore creator password back to creator123
+        db.password_reset_attempts.delete_many({"email": CREATOR_EMAIL})
+        db.password_reset_tokens.delete_many({"email": CREATOR_EMAIL})
+        r = requests.post(f"{BASE_URL}/api/auth/forgot-password",
+                          json={"email": CREATOR_EMAIL}, timeout=15)
+        assert r.status_code == 200, f"restore-forgot failed: {r.text}"
+        tok = r.json().get("dev_reset_token")
+        assert tok, "DEV_MODE token not issued during cleanup"
+        rr = requests.post(f"{BASE_URL}/api/auth/reset-password",
+                           json={"token": tok, "new_password": CREATOR_PASSWORD}, timeout=15)
+        assert rr.status_code == 200, f"restore-reset failed: {rr.text}"
+        # verify login works again
+        lr = requests.post(f"{BASE_URL}/api/auth/login",
+                           json={"email": CREATOR_EMAIL, "password": CREATOR_PASSWORD}, timeout=15)
+        assert lr.status_code == 200, f"Creator login w/ creator123 failed after restore: {lr.text}"
+        mc.close()
+
+    def _clear_rate_limit(self, email):
+        from pymongo import MongoClient
+        mc = MongoClient(os.environ["MONGO_URL"])
+        db = mc[os.environ["DB_NAME"]]
+        db.password_reset_attempts.delete_many({"email": email})
+        mc.close()
+
+    # ---- 1. Existing email returns dev token ----
+    def test_forgot_existing_email_returns_dev_token(self):
+        self._clear_rate_limit(CREATOR_EMAIL)
+        r = requests.post(f"{BASE_URL}/api/auth/forgot-password",
+                          json={"email": CREATOR_EMAIL}, timeout=15)
+        assert r.status_code == 200
+        data = r.json()
+        assert data.get("ok") is True
+        assert "message" in data
+        assert isinstance(data.get("dev_reset_token"), str) and len(data["dev_reset_token"]) >= 16
+        assert isinstance(data.get("dev_reset_url"), str) and "token=" in data["dev_reset_url"]
+        assert isinstance(data.get("dev_expires_in_minutes"), int)
+
+    # ---- 2. Non-existent email does NOT leak dev token ----
+    def test_forgot_unknown_email_no_leak(self):
+        self._clear_rate_limit("ghost_no_user_xyz@facelessforge.io")
+        r = requests.post(f"{BASE_URL}/api/auth/forgot-password",
+                          json={"email": "ghost_no_user_xyz@facelessforge.io"}, timeout=15)
+        assert r.status_code == 200
+        data = r.json()
+        assert data.get("ok") is True
+        assert "dev_reset_token" not in data
+        assert "dev_reset_url" not in data
+
+    # ---- 3. Rate-limit after 5 requests ----
+    def test_forgot_rate_limit_after_5(self):
+        self._clear_rate_limit(CREATOR_EMAIL)
+        tokens_issued = 0
+        last_resp = None
+        for i in range(6):
+            r = requests.post(f"{BASE_URL}/api/auth/forgot-password",
+                              json={"email": CREATOR_EMAIL}, timeout=15)
+            assert r.status_code == 200
+            if r.json().get("dev_reset_token"):
+                tokens_issued += 1
+            last_resp = r.json()
+        # After 5 successful attempts, the 6th must NOT issue a new token
+        assert tokens_issued <= 5, f"Rate-limit failed: {tokens_issued} tokens issued"
+        assert "dev_reset_token" not in last_resp, "6th request still issued a token"
+
+    # ---- 4. New forgot request invalidates previous token ----
+    def test_forgot_invalidates_previous_token(self):
+        self._clear_rate_limit(CREATOR_EMAIL)
+        r1 = requests.post(f"{BASE_URL}/api/auth/forgot-password",
+                           json={"email": CREATOR_EMAIL}, timeout=15)
+        token1 = r1.json()["dev_reset_token"]
+        r2 = requests.post(f"{BASE_URL}/api/auth/forgot-password",
+                           json={"email": CREATOR_EMAIL}, timeout=15)
+        token2 = r2.json()["dev_reset_token"]
+        assert token1 != token2
+        # Old token should be unusable now
+        rr = requests.post(f"{BASE_URL}/api/auth/reset-password",
+                           json={"token": token1, "new_password": "newpass123"}, timeout=15)
+        assert rr.status_code == 400
+
+    # ---- 5. Reset-password valid token changes password ----
+    def test_reset_password_valid_flow(self):
+        self._clear_rate_limit(CREATOR_EMAIL)
+        r = requests.post(f"{BASE_URL}/api/auth/forgot-password",
+                          json={"email": CREATOR_EMAIL}, timeout=15)
+        token = r.json()["dev_reset_token"]
+        new_pw = "TempNewPass789"
+        rr = requests.post(f"{BASE_URL}/api/auth/reset-password",
+                           json={"token": token, "new_password": new_pw}, timeout=15)
+        assert rr.status_code == 200
+        assert rr.json().get("ok") is True
+        # Old password rejected
+        old_login = requests.post(f"{BASE_URL}/api/auth/login",
+                                  json={"email": CREATOR_EMAIL, "password": CREATOR_PASSWORD}, timeout=15)
+        assert old_login.status_code == 401
+        # New password accepted
+        new_login = requests.post(f"{BASE_URL}/api/auth/login",
+                                  json={"email": CREATOR_EMAIL, "password": new_pw}, timeout=15)
+        assert new_login.status_code == 200
+
+    # ---- 6. Already-used token rejected ----
+    def test_reset_password_reused_token(self):
+        self._clear_rate_limit(CREATOR_EMAIL)
+        r = requests.post(f"{BASE_URL}/api/auth/forgot-password",
+                          json={"email": CREATOR_EMAIL}, timeout=15)
+        token = r.json()["dev_reset_token"]
+        # First use succeeds
+        rr = requests.post(f"{BASE_URL}/api/auth/reset-password",
+                           json={"token": token, "new_password": "OnceUsed789"}, timeout=15)
+        assert rr.status_code == 200
+        # Second use fails
+        rr2 = requests.post(f"{BASE_URL}/api/auth/reset-password",
+                            json={"token": token, "new_password": "TwiceUsed789"}, timeout=15)
+        assert rr2.status_code == 400
+
+    # ---- 7. Unknown token rejected ----
+    def test_reset_password_unknown_token(self):
+        r = requests.post(f"{BASE_URL}/api/auth/reset-password",
+                          json={"token": "this-token-definitely-does-not-exist-abc123", "new_password": "WhateverPass"}, timeout=15)
+        assert r.status_code == 400
+
+    # ---- 8. Expired token rejected (inject via pymongo) ----
+    def test_reset_password_expired_token(self):
+        from pymongo import MongoClient
+        import secrets as _secrets
+        from datetime import datetime, timezone, timedelta
+        mc = MongoClient(os.environ["MONGO_URL"])
+        db = mc[os.environ["DB_NAME"]]
+        user = db.users.find_one({"email": CREATOR_EMAIL})
+        assert user, "creator user not found"
+        expired_tok = _secrets.token_urlsafe(32)
+        past = datetime.now(timezone.utc) - timedelta(days=1)
+        db.password_reset_tokens.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user["id"],
+            "email": CREATOR_EMAIL,
+            "token": expired_tok,
+            "created_at": past,
+            "expires_at": past,
+            "used_at": None,
+        })
+        r = requests.post(f"{BASE_URL}/api/auth/reset-password",
+                          json={"token": expired_tok, "new_password": "ValidPw123"}, timeout=15)
+        assert r.status_code == 400
+        # cleanup
+        db.password_reset_tokens.delete_one({"token": expired_tok})
+        mc.close()
+
+    # ---- 9. Password length validation ----
+    def test_reset_password_too_short_422(self):
+        self._clear_rate_limit(CREATOR_EMAIL)
+        r = requests.post(f"{BASE_URL}/api/auth/forgot-password",
+                          json={"email": CREATOR_EMAIL}, timeout=15)
+        token = r.json()["dev_reset_token"]
+        rr = requests.post(f"{BASE_URL}/api/auth/reset-password",
+                           json={"token": token, "new_password": "abc"}, timeout=15)
+        assert rr.status_code == 422
+
+    # ---- 10. Invalid email format -> 422 ----
+    def test_forgot_invalid_email_422(self):
+        r = requests.post(f"{BASE_URL}/api/auth/forgot-password",
+                          json={"email": "not-an-email"}, timeout=15)
+        assert r.status_code == 422

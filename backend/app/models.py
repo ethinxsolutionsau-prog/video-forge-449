@@ -17,6 +17,15 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=16, max_length=200)
+    new_password: str = Field(min_length=6, max_length=200)
+
+
 class UserPublic(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str

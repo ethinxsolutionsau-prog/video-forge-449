@@ -6,7 +6,7 @@ import json
 import os
 import uuid
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Body
@@ -21,7 +21,7 @@ from .db import get_db
 from .models import (
     RegisterRequest, LoginRequest, ProjectCreate, ProjectUpdate,
     ScriptUpdate, MetadataUpdate, ProviderSettingsUpdate, AssetCreate,
-    ShareUpdate,
+    ShareUpdate, ForgotPasswordRequest, ResetPasswordRequest,
 )
 from .scoring import quality_score, quality_label, compute_project_status, scenes_to_csv
 from . import generation as gen
@@ -106,6 +106,118 @@ async def logout(response: Response, _user=Depends(get_current_user)):
 @router.get("/auth/me")
 async def me(user=Depends(get_current_user)):
     return _ser(user)
+
+
+# ---- Forgot / Reset password ----
+
+RESET_RATE_LIMIT = 5              # max requests
+RESET_RATE_WINDOW_SECONDS = 900   # per 15 minutes
+
+
+def _dev_mode() -> bool:
+    return os.environ.get("DEV_MODE", "false").lower() in ("1", "true", "yes")
+
+
+@router.post("/auth/forgot-password")
+async def forgot_password(body: ForgotPasswordRequest, request: Request):
+    """Always returns 200 — never reveals whether the email exists.
+    Rate-limited per-IP+email to 5 requests per 15 minutes.
+    In DEV_MODE, returns the reset token + reset_url in the response and logs it.
+    """
+    import secrets
+    import logging
+    logger = logging.getLogger("facelessforge.auth")
+
+    db = get_db()
+    email = body.email.lower()
+    ip = request.client.host if request.client else "unknown"
+    identifier = f"{ip}:{email}"
+    now = _now()
+
+    # Rate limit check
+    window_start = now - timedelta(seconds=RESET_RATE_WINDOW_SECONDS)
+    recent_count = await db.password_reset_attempts.count_documents({
+        "identifier": identifier,
+        "created_at": {"$gte": window_start},
+    })
+    if recent_count >= RESET_RATE_LIMIT:
+        # Still return success to avoid enumeration; just skip token creation.
+        return {"ok": True, "message": "If that email exists, a reset link has been issued."}
+
+    await db.password_reset_attempts.insert_one({
+        "identifier": identifier, "email": email, "ip": ip, "created_at": now,
+    })
+
+    user = await db.users.find_one({"email": email})
+    response_payload = {"ok": True, "message": "If that email exists, a reset link has been issued."}
+
+    if user:
+        # Invalidate any existing un-used tokens for this user
+        await db.password_reset_tokens.update_many(
+            {"user_id": user["id"], "used_at": None},
+            {"$set": {"used_at": now}},
+        )
+        ttl_minutes = int(os.environ.get("PASSWORD_RESET_TTL_MINUTES", "60"))
+        token = secrets.token_urlsafe(32)
+        expires_at = now + timedelta(minutes=ttl_minutes)
+        await db.password_reset_tokens.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user["id"],
+            "email": email,
+            "token": token,
+            "created_at": now,
+            "expires_at": expires_at,
+            "used_at": None,
+        })
+        # Build reset link (frontend route)
+        frontend = os.environ.get("FRONTEND_URL") or request.headers.get("origin") or ""
+        reset_url = f"{frontend}/reset-password?token={token}" if frontend else f"/reset-password?token={token}"
+        logger.warning("[DEV reset] %s -> %s", email, reset_url)
+
+        if _dev_mode():
+            response_payload["dev_reset_token"] = token
+            response_payload["dev_reset_url"] = reset_url
+            response_payload["dev_expires_in_minutes"] = ttl_minutes
+
+    return response_payload
+
+
+@router.post("/auth/reset-password")
+async def reset_password(body: ResetPasswordRequest):
+    db = get_db()
+    now = _now()
+    record = await db.password_reset_tokens.find_one({"token": body.token})
+    if not record:
+        raise HTTPException(status_code=400, detail="This reset link is invalid or has already been used.")
+    if record.get("used_at") is not None:
+        raise HTTPException(status_code=400, detail="This reset link has already been used.")
+    expires_at = record.get("expires_at")
+    if isinstance(expires_at, datetime):
+        # Motor returns naive UTC datetimes; normalise before comparison.
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < now:
+            raise HTTPException(status_code=400, detail="This reset link has expired. Please request a new one.")
+
+    user = await db.users.find_one({"id": record["user_id"]})
+    if not user:
+        raise HTTPException(status_code=400, detail="This reset link is invalid or has already been used.")
+
+    new_hash = hash_password(body.new_password)
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"password_hash": new_hash, "updated_at": now}},
+    )
+    await db.password_reset_tokens.update_one(
+        {"token": body.token},
+        {"$set": {"used_at": now}},
+    )
+    # Invalidate any other outstanding tokens for this user
+    await db.password_reset_tokens.update_many(
+        {"user_id": user["id"], "used_at": None},
+        {"$set": {"used_at": now}},
+    )
+    return {"ok": True, "message": "Password updated. You can now sign in."}
 
 
 # ============================ PROJECTS ============================

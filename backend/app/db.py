@@ -40,3 +40,7 @@ async def ensure_indexes():
     await db.login_attempts.create_index("identifier")
     # Share tokens
     await db.projects.create_index("share_token", sparse=True, unique=True)
+    # Password reset tokens (TTL on expires_at)
+    await db.password_reset_tokens.create_index("token", unique=True)
+    await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+    await db.password_reset_attempts.create_index("identifier")

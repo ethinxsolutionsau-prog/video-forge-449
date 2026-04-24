@@ -56,7 +56,12 @@ export default function LoginPage() {
             />
           </div>
           <div className="space-y-2">
-            <label className="font-mono text-[10px] uppercase tracking-widest text-zinc-500">Password</label>
+            <label className="font-mono text-[10px] uppercase tracking-widest text-zinc-500 flex items-center justify-between">
+              <span>Password</span>
+              <Link to="/forgot-password" data-testid="login-forgot-link" className="normal-case tracking-normal text-zinc-400 hover:text-[#00E5FF] transition-colors">
+                Forgot?
+              </Link>
+            </label>
             <input
               data-testid="login-password"
               type="password"

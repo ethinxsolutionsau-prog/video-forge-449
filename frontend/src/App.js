@@ -16,6 +16,8 @@ import SettingsPage from "@/pages/SettingsPage";
 import AssetLibraryPage from "@/pages/AssetLibraryPage";
 import AdminUsersPage from "@/pages/AdminUsersPage";
 import PublicSharePage from "@/pages/PublicSharePage";
+import ForgotPasswordPage from "@/pages/ForgotPasswordPage";
+import ResetPasswordPage from "@/pages/ResetPasswordPage";
 
 function Protected({ children, adminOnly = false }) {
   const { user } = useAuth();
@@ -54,6 +56,8 @@ export default function App() {
             <Route path="/s/:token" element={<PublicSharePage />} />
             <Route path="/login" element={<GuestOnly><LoginPage /></GuestOnly>} />
             <Route path="/register" element={<GuestOnly><RegisterPage /></GuestOnly>} />
+            <Route path="/forgot-password" element={<GuestOnly><ForgotPasswordPage /></GuestOnly>} />
+            <Route path="/reset-password" element={<GuestOnly><ResetPasswordPage /></GuestOnly>} />
 
             <Route path="/app" element={<Protected><DashboardPage /></Protected>} />
             <Route path="/app/projects" element={<Protected><ProjectsPage /></Protected>} />
