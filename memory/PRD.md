@@ -65,6 +65,16 @@ Build a production-ready SaaS web app **FacelessForge**: a creator-first faceles
   - Recharts ResponsiveContainer width/height warnings eliminated
 - [x] **Share page social unfurl**: client-side OG/Twitter meta tags (`og:title`, `og:description`, `og:url`, `og:image`, `twitter:card=summary_large_image`, canonical link) populated from the public share payload; `/og-share-default.svg` branded fallback image served from `public/`. Deferred: true server-side rendering for no-JS crawlers.
 
+### Phase 3 — 2026-02 (shipping now)
+- [x] **Pexels stock-footage fetcher** (mock-first, real-key-ready):
+  - `app/stock.py` service: `search_stock(query, media_type, per_page)` normalises Pexels photos + videos into one shape; deterministic SHA1-seeded mock when `PEXELS_API_KEY` is missing or `USE_MOCK_PEXELS=true`; graceful fallback to mock on Pexels 429 / network errors.
+  - New endpoints: `GET /api/stock/meta` (mock flag), `POST /api/projects/{pid}/stock-search`, `POST /api/projects/{pid}/scenes/{sid}/find-assets`, `POST /api/projects/{pid}/scenes/{sid}/attach-asset` (409 on duplicate by `external_id+source+scene`), `PATCH /api/projects/{pid}/assets/{aid}` status.
+  - Asset model extended with: `scene_id`, `external_id`, `preview_url`, `source_url`, `download_url`, `attribution_name/url`, `width`, `height`, `duration`, `query`.
+  - `StockAssetModal` (shadcn dialog): auto-seeds query from `scene.search_terms`, All/Videos/Photos tabs, amber "MOCK RESULTS" badge, green "Pexels · LIVE" badge, attach counter, duplicate-safe.
+  - Scene Planner rows gain per-scene `Find Assets` button + inline thumbnail chips with hover-to-detach.
+  - Asset Library upgraded with preview thumbnails, source badge, photographer attribution, dimensions, linked scene chip, remove action, filter tabs (All / Stock / Thumbnails).
+  - 67/67 backend pytest (+13 new) + 100% Playwright passing. Zero critical issues.
+
 ## Seeded Content
 - `admin@facelessforge.io` / `admin123`
 - `creator@facelessforge.io` / `creator123`

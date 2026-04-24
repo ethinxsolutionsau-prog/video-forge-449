@@ -7,9 +7,9 @@ import { toast } from "sonner";
 import { api, formatApiError } from "../lib/api";
 
 const TABS = [
-  { id: "both", label: "All" },
-  { id: "videos", label: "Videos" },
-  { id: "photos", label: "Photos" },
+  { id: "both", label: "All", testId: "stock-tab-all" },
+  { id: "videos", label: "Videos", testId: "stock-tab-videos" },
+  { id: "photos", label: "Photos", testId: "stock-tab-photos" },
 ];
 
 export default function StockAssetModal({ open, onOpenChange, projectId, scene, onAttached }) {
@@ -145,7 +145,7 @@ export default function StockAssetModal({ open, onOpenChange, projectId, scene, 
                 <button
                   key={t.id}
                   type="button"
-                  data-testid={`stock-tab-${t.id}`}
+                  data-testid={t.testId}
                   onClick={() => switchType(t.id)}
                   className={`px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${
                     mediaType === t.id ? "bg-[#00E5FF] text-black" : "text-zinc-400 hover:text-white hover:bg-[#1A1A1A]"
