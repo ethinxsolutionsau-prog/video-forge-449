@@ -53,6 +53,9 @@ Build a production-ready SaaS web app **FacelessForge**: a creator-first faceles
 - [x] Landing page with dark-mode cinematic hero
 - [x] 31/31 backend tests + 100% frontend E2E tests passing
 
+### Phase 2 — 2026-02 (shipping now)
+- [x] **Public share links**: toggle per project, tokenised `/s/{token}` public page, read-only, view counter, last-viewed timestamp, title override, regenerate/disable actions, gated on METADATA_GENERATED+, private fields scrubbed. 44/44 backend + 100% frontend tests pass.
+
 ## Seeded Content
 - `admin@facelessforge.io` / `admin123`
 - `creator@facelessforge.io` / `creator123`
