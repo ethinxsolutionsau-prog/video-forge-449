@@ -38,3 +38,5 @@ async def ensure_indexes():
     await db.cost_logs.create_index("project_id")
     await db.provider_settings.create_index("user_id")
     await db.login_attempts.create_index("identifier")
+    # Share tokens
+    await db.projects.create_index("share_token", sparse=True, unique=True)

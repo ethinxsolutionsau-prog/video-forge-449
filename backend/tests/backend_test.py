@@ -353,3 +353,179 @@ class TestOwnershipAndViewer:
         r = creator_session.get(f"{BASE_URL}/api/projects/{p['id']}", timeout=15)
         assert r.status_code == 403
         s_b.delete(f"{BASE_URL}/api/projects/{p['id']}", timeout=15)
+
+
+# ---------- Share Links (Phase 2) ----------
+
+def _find_completed_project(session) -> dict | None:
+    """Return the seeded COMPLETED project (has full metadata)."""
+    r = session.get(f"{BASE_URL}/api/projects", timeout=15)
+    r.raise_for_status()
+    for p in r.json():
+        if p.get("status") == "COMPLETED":
+            return p
+    return None
+
+
+@pytest.fixture(scope="module")
+def completed_project(creator_session):
+    p = _find_completed_project(creator_session)
+    assert p is not None, "Expected at least one seeded COMPLETED project"
+    yield p
+    # Cleanup: disable share so test does not leak enabled state
+    try:
+        creator_session.delete(f"{BASE_URL}/api/projects/{p['id']}/share", timeout=15)
+    except Exception:
+        pass
+
+
+@pytest.fixture(scope="module")
+def draft_project(creator_session):
+    p = creator_session.post(f"{BASE_URL}/api/projects", json={
+        "name": "TEST_share_draft", "niche": "tech",
+        "topic": "A draft project that cannot be shared yet text",
+        "audience": "devs", "tone": "neutral", "target_duration": 120,
+    }, timeout=15).json()
+    yield p
+    creator_session.delete(f"{BASE_URL}/api/projects/{p['id']}", timeout=15)
+
+
+class TestShareLinks:
+    def test_enable_share_draft_rejected(self, creator_session, draft_project):
+        r = creator_session.post(f"{BASE_URL}/api/projects/{draft_project['id']}/share",
+                                 json={}, timeout=15)
+        assert r.status_code == 400
+        assert "shared" in r.text.lower() or "METADATA_GENERATED" in r.text
+
+    def test_enable_share_on_completed(self, creator_session, completed_project):
+        r = creator_session.post(f"{BASE_URL}/api/projects/{completed_project['id']}/share",
+                                 json={}, timeout=15)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["enabled"] is True
+        assert data["token"] and len(data["token"]) >= 16
+        assert "view_count" in data
+
+    def test_project_view_contains_share_block(self, creator_session, completed_project):
+        r = creator_session.get(f"{BASE_URL}/api/projects/{completed_project['id']}", timeout=15)
+        assert r.status_code == 200
+        share = r.json().get("share")
+        assert share is not None
+        assert share["enabled"] is True
+        assert share["token"] is not None
+        assert "view_count" in share and "last_viewed_at" in share
+
+    def test_enable_share_with_title_override(self, creator_session, completed_project):
+        r = creator_session.post(f"{BASE_URL}/api/projects/{completed_project['id']}/share",
+                                 json={"title_override": "TEST override title"}, timeout=15)
+        assert r.status_code == 200
+        assert r.json()["title_override"] == "TEST override title"
+
+    def test_patch_share_clears_title(self, creator_session, completed_project):
+        # set
+        r = creator_session.patch(f"{BASE_URL}/api/projects/{completed_project['id']}/share",
+                                  json={"title_override": "Another TEST title"}, timeout=15)
+        assert r.status_code == 200
+        assert r.json()["title_override"] == "Another TEST title"
+        # clear via empty string
+        r2 = creator_session.patch(f"{BASE_URL}/api/projects/{completed_project['id']}/share",
+                                   json={"title_override": ""}, timeout=15)
+        assert r2.status_code == 200
+        assert r2.json()["title_override"] in (None, "")
+
+    def test_public_share_anonymous_access(self, creator_session, completed_project):
+        # Ensure enabled
+        enable = creator_session.post(f"{BASE_URL}/api/projects/{completed_project['id']}/share",
+                                      json={}, timeout=15).json()
+        token = enable["token"]
+        anon = requests.Session()  # no auth
+        r = anon.get(f"{BASE_URL}/api/public/share/{token}", timeout=15)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Required fields
+        for k in ("display_title", "status", "quality_score", "metadata", "thumbnails"):
+            assert k in body, f"missing {k}"
+        # private fields must NOT leak
+        forbidden = {"user_id", "estimated_cost", "script", "scenes", "cta_goal", "monetisation_intent", "email", "owner_email"}
+        assert not (forbidden & set(body.keys())), f"leaked fields: {forbidden & set(body.keys())}"
+        # metadata sub-shape
+        md = body["metadata"]
+        assert md is not None
+        for k in ("description", "tags", "hashtags", "chapters", "pinned_comment"):
+            assert k in md
+
+    def test_public_unknown_token_404(self):
+        r = requests.get(f"{BASE_URL}/api/public/share/definitely-not-a-real-token-xx", timeout=15)
+        assert r.status_code == 404
+
+    def test_public_short_token_404(self):
+        r = requests.get(f"{BASE_URL}/api/public/share/short", timeout=15)
+        assert r.status_code == 404
+
+    def test_view_count_increments(self, creator_session, completed_project):
+        enable = creator_session.post(f"{BASE_URL}/api/projects/{completed_project['id']}/share",
+                                      json={}, timeout=15).json()
+        token = enable["token"]
+        before = creator_session.get(f"{BASE_URL}/api/projects/{completed_project['id']}", timeout=15).json()["share"]["view_count"]
+        # 2 anonymous hits
+        for _ in range(2):
+            requests.get(f"{BASE_URL}/api/public/share/{token}", timeout=15)
+        time.sleep(0.3)
+        after = creator_session.get(f"{BASE_URL}/api/projects/{completed_project['id']}", timeout=15).json()["share"]
+        assert after["view_count"] >= before + 2
+        assert after["last_viewed_at"] is not None
+
+    def test_regenerate_rotates_token_and_resets_count(self, creator_session, completed_project):
+        enable = creator_session.post(f"{BASE_URL}/api/projects/{completed_project['id']}/share",
+                                      json={}, timeout=15).json()
+        old_token = enable["token"]
+        # Hit it once so view_count > 0
+        requests.get(f"{BASE_URL}/api/public/share/{old_token}", timeout=15)
+        r = creator_session.post(f"{BASE_URL}/api/projects/{completed_project['id']}/share/regenerate", timeout=15)
+        assert r.status_code == 200
+        new_token = r.json()["token"]
+        assert new_token and new_token != old_token
+        assert r.json()["view_count"] == 0
+        # old token no longer works
+        old = requests.get(f"{BASE_URL}/api/public/share/{old_token}", timeout=15)
+        assert old.status_code == 404
+        # new token works
+        new = requests.get(f"{BASE_URL}/api/public/share/{new_token}", timeout=15)
+        assert new.status_code == 200
+
+    def test_disable_makes_public_404(self, creator_session, completed_project):
+        enable = creator_session.post(f"{BASE_URL}/api/projects/{completed_project['id']}/share",
+                                      json={}, timeout=15).json()
+        token = enable["token"]
+        d = creator_session.delete(f"{BASE_URL}/api/projects/{completed_project['id']}/share", timeout=15)
+        assert d.status_code == 200
+        assert d.json()["enabled"] is False
+        # public URL now 404
+        r = requests.get(f"{BASE_URL}/api/public/share/{token}", timeout=15)
+        assert r.status_code == 404
+        # and project view returns token: None
+        pv = creator_session.get(f"{BASE_URL}/api/projects/{completed_project['id']}", timeout=15).json()
+        assert pv["share"]["enabled"] is False
+        assert pv["share"]["token"] is None
+
+    def test_other_creator_forbidden(self, completed_project):
+        # Register creator B
+        s_b = requests.Session()
+        email = f"test_share_B_{uuid.uuid4().hex[:8]}@example.com"
+        rr = s_b.post(f"{BASE_URL}/api/auth/register", json={
+            "name": "TEST share B", "email": email, "password": "pw123456", "role": "creator"}, timeout=15)
+        assert rr.status_code == 200
+        for method, path in [
+            ("post", f"/api/projects/{completed_project['id']}/share"),
+            ("patch", f"/api/projects/{completed_project['id']}/share"),
+            ("delete", f"/api/projects/{completed_project['id']}/share"),
+            ("post", f"/api/projects/{completed_project['id']}/share/regenerate"),
+        ]:
+            r = getattr(s_b, method)(f"{BASE_URL}{path}", json={}, timeout=15)
+            assert r.status_code == 403, f"{method} {path} -> {r.status_code} expected 403"
+
+    def test_admin_can_manage_share(self, admin_session, completed_project):
+        r = admin_session.post(f"{BASE_URL}/api/projects/{completed_project['id']}/share",
+                               json={}, timeout=15)
+        assert r.status_code == 200
+        assert r.json()["enabled"] is True

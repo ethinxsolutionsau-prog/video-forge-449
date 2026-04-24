@@ -15,6 +15,7 @@ import AnalyticsPage from "@/pages/AnalyticsPage";
 import SettingsPage from "@/pages/SettingsPage";
 import AssetLibraryPage from "@/pages/AssetLibraryPage";
 import AdminUsersPage from "@/pages/AdminUsersPage";
+import PublicSharePage from "@/pages/PublicSharePage";
 
 function Protected({ children, adminOnly = false }) {
   const { user } = useAuth();
@@ -50,6 +51,7 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<LandingPage />} />
+            <Route path="/s/:token" element={<PublicSharePage />} />
             <Route path="/login" element={<GuestOnly><LoginPage /></GuestOnly>} />
             <Route path="/register" element={<GuestOnly><RegisterPage /></GuestOnly>} />
 

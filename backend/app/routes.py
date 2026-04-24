@@ -21,6 +21,7 @@ from .db import get_db
 from .models import (
     RegisterRequest, LoginRequest, ProjectCreate, ProjectUpdate,
     ScriptUpdate, MetadataUpdate, ProviderSettingsUpdate, AssetCreate,
+    ShareUpdate,
 )
 from .scoring import quality_score, quality_label, compute_project_status, scenes_to_csv
 from . import generation as gen
@@ -137,6 +138,7 @@ async def _attach_project_view(db, project: dict) -> dict:
         "metadata": _ser(metadata) if metadata else None,
         "assets": [_ser(a) for a in assets],
         "render_job": _ser(render_job) if render_job else None,
+        "share": _share_payload(project),
     }
 
 
@@ -601,3 +603,140 @@ async def admin_update_role(user_id: str, role: str = Body(..., embed=True), _ad
     await db.users.update_one({"id": user_id}, {"$set": {"role": role, "updated_at": _now()}})
     u = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
     return _ser(u) if u else {"ok": True}
+
+
+
+# ============================ SHARE LINKS ============================
+
+SHAREABLE_STATUSES = {"METADATA_GENERATED", "ASSETS_READY", "READY_TO_RENDER", "COMPLETED"}
+
+
+def _share_payload(project: dict) -> dict:
+    return {
+        "enabled": bool(project.get("share_enabled")),
+        "token": project.get("share_token") if project.get("share_enabled") else None,
+        "title_override": project.get("share_title_override"),
+        "view_count": int(project.get("share_view_count") or 0),
+        "last_viewed_at": project.get("share_last_viewed_at").isoformat()
+            if isinstance(project.get("share_last_viewed_at"), datetime) else project.get("share_last_viewed_at"),
+    }
+
+
+@router.post("/projects/{project_id}/share")
+async def enable_share(project_id: str, body: ShareUpdate = Body(default=None), user=Depends(get_current_user)):
+    db = get_db()
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    _ensure_project_access(project, user, write=True)
+    if project.get("status") not in SHAREABLE_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Project must be one of {sorted(SHAREABLE_STATUSES)} to be shared (current: {project.get('status')})",
+        )
+    patch = {
+        "share_enabled": True,
+        "updated_at": _now(),
+    }
+    if not project.get("share_token"):
+        import secrets
+        patch["share_token"] = secrets.token_urlsafe(24)
+    if body is not None and body.title_override is not None:
+        patch["share_title_override"] = body.title_override.strip() or None
+    await db.projects.update_one({"id": project_id}, {"$set": patch})
+    updated = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    return _share_payload(updated)
+
+
+@router.patch("/projects/{project_id}/share")
+async def update_share(project_id: str, body: ShareUpdate, user=Depends(get_current_user)):
+    db = get_db()
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    _ensure_project_access(project, user, write=True)
+    patch = {"updated_at": _now()}
+    if body.title_override is not None:
+        patch["share_title_override"] = body.title_override.strip() or None
+    await db.projects.update_one({"id": project_id}, {"$set": patch})
+    updated = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    return _share_payload(updated)
+
+
+@router.delete("/projects/{project_id}/share")
+async def disable_share(project_id: str, user=Depends(get_current_user)):
+    db = get_db()
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    _ensure_project_access(project, user, write=True)
+    await db.projects.update_one(
+        {"id": project_id},
+        {"$set": {"share_enabled": False, "updated_at": _now()}},
+    )
+    updated = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    return _share_payload(updated)
+
+
+@router.post("/projects/{project_id}/share/regenerate")
+async def regenerate_share_token(project_id: str, user=Depends(get_current_user)):
+    db = get_db()
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    _ensure_project_access(project, user, write=True)
+    import secrets
+    patch = {
+        "share_token": secrets.token_urlsafe(24),
+        "share_view_count": 0,
+        "share_last_viewed_at": None,
+        "updated_at": _now(),
+    }
+    await db.projects.update_one({"id": project_id}, {"$set": patch})
+    updated = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    return _share_payload(updated)
+
+
+@router.get("/public/share/{token}")
+async def public_share(token: str):
+    """Read-only public view of a shared project. No auth required."""
+    if not token or len(token) < 8:
+        raise HTTPException(status_code=404, detail="Share link not found")
+    db = get_db()
+    project = await db.projects.find_one({"share_token": token, "share_enabled": True}, {"_id": 0})
+    if not project:
+        raise HTTPException(status_code=404, detail="Share link not found or disabled")
+    if project.get("status") not in SHAREABLE_STATUSES:
+        raise HTTPException(status_code=404, detail="Project is no longer shareable")
+
+    metadata = await db.metadata_packages.find_one({"project_id": project["id"]}, {"_id": 0})
+    thumbnails = await db.assets.find(
+        {"project_id": project["id"], "asset_type": "thumbnail_concept"}, {"_id": 0}
+    ).to_list(10)
+
+    # Increment view count and update last viewed
+    await db.projects.update_one(
+        {"id": project["id"]},
+        {"$inc": {"share_view_count": 1}, "$set": {"share_last_viewed_at": _now()}},
+    )
+
+    display_title = (
+        project.get("share_title_override")
+        or (metadata or {}).get("selected_title")
+        or project["name"]
+    )
+
+    # Read-only, scrub private fields
+    return {
+        "display_title": display_title,
+        "project_name": project["name"],
+        "niche": project["niche"],
+        "status": project["status"],
+        "quality_score": int(project.get("quality_score") or 0),
+        "metadata": {
+            "selected_title": (metadata or {}).get("selected_title"),
+            "description": (metadata or {}).get("description"),
+            "tags": (metadata or {}).get("tags") or [],
+            "hashtags": (metadata or {}).get("hashtags") or [],
+            "chapters": (metadata or {}).get("chapters") or [],
+            "pinned_comment": (metadata or {}).get("pinned_comment"),
+        } if metadata else None,
+        "thumbnails": [
+            {"name": t.get("name"), "brief": t.get("brief")}
+            for t in thumbnails if t.get("brief")
+        ],
+        "shared_at": project.get("updated_at").isoformat()
+            if isinstance(project.get("updated_at"), datetime) else project.get("updated_at"),
+    }

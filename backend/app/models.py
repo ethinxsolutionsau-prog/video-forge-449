@@ -162,3 +162,8 @@ class AssetCreate(BaseModel):
     source: str = "generated_brief"
     tags: List[str] = []
     file_path: Optional[str] = None
+
+
+# ---------- Share ----------
+class ShareUpdate(BaseModel):
+    title_override: Optional[str] = Field(default=None, max_length=200)

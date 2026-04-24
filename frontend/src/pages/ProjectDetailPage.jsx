@@ -11,6 +11,7 @@ import ScenePlanner from "../components/ScenePlanner";
 import MetadataPanel from "../components/MetadataPanel";
 import ThumbnailPanel from "../components/ThumbnailPanel";
 import RenderPanel from "../components/RenderPanel";
+import SharePanel from "../components/SharePanel";
 import { api, formatApiError, API } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatCurrency, formatDuration } from "../lib/format";
@@ -83,7 +84,7 @@ export default function ProjectDetailPage() {
     );
   }
 
-  const { project, script, scenes, metadata, assets, render_job } = view;
+  const { project, script, scenes, metadata, assets, render_job, share } = view;
 
   return (
     <AppShell>
@@ -194,11 +195,20 @@ export default function ProjectDetailPage() {
         {/* Tab content */}
         <div>
           {tab === "overview" && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <OverviewTile label="Script" ready={!!script} sub={script ? `${script.word_count} words` : "Not generated"} />
-              <OverviewTile label="Scenes" ready={scenes.length > 0} sub={scenes.length > 0 ? `${scenes.length} scenes` : "Not generated"} />
-              <OverviewTile label="Metadata" ready={!!metadata} sub={metadata ? `${metadata.title_options?.length || 0} titles` : "Not generated"} />
-              <OverviewTile label="Thumbnails" ready={assets.some(a => a.asset_type === "thumbnail_concept")} sub={`${assets.filter(a => a.asset_type === "thumbnail_concept").length} concepts`} />
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <OverviewTile label="Script" ready={!!script} sub={script ? `${script.word_count} words` : "Not generated"} />
+                <OverviewTile label="Scenes" ready={scenes.length > 0} sub={scenes.length > 0 ? `${scenes.length} scenes` : "Not generated"} />
+                <OverviewTile label="Metadata" ready={!!metadata} sub={metadata ? `${metadata.title_options?.length || 0} titles` : "Not generated"} />
+                <OverviewTile label="Thumbnails" ready={assets.some(a => a.asset_type === "thumbnail_concept")} sub={`${assets.filter(a => a.asset_type === "thumbnail_concept").length} concepts`} />
+              </div>
+              <SharePanel
+                projectId={project.id}
+                share={share}
+                projectStatus={project.status}
+                canEdit={canEdit}
+                onChange={fetchView}
+              />
             </div>
           )}
           {tab === "script" && (
