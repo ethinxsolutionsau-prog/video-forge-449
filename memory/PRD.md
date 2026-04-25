@@ -140,6 +140,18 @@ Build a production-ready SaaS web app **FacelessForge**: a creator-first faceles
 - [x] **Manual retention trigger**: `POST /api/admin/retention/run` (admin-only) returns the cleanup report.
 - [x] **Tests**: +7 `TestHardening` (admin RBAC on diagnostics + retention, payload shape, CORS no-wildcard when FRONTEND_URL set, HttpOnly+SameSite on auth cookies). **115/115 backend tests pass** in 264s.
 
+### Phase 8 — Object-storage abstraction (2026-02)
+- [x] **Pluggable storage backend** (`app/storage.py`): two adapters, controlled by `STORAGE_MODE`:
+  - `local` (default — preserves current behaviour byte-for-byte): writes under `/app/backend/static/<key>` and returns `/api/static/<key>` URLs.
+  - `object` (S3-compatible — AWS S3, Cloudflare R2, MinIO, Backblaze, Wasabi): lazy `boto3` client; uploads with proper `Content-Type` + `Cache-Control`; returns public URL when `STORAGE_PUBLIC_BASE_URL` set, else falls back to a presigned URL with `STORAGE_SIGNED_URL_TTL` (default 24h). Local file removed after successful upload.
+- [x] **Render integration**: ffmpeg writes to a temp local workdir, then `storage.save_file(...)` is called for the final MP4. Job persists `output_url` (always remote-safe), `output_path` (None when remote), `output_storage_mode`, `output_storage_key`. Public share `final_video.url` and ZIP `render.json` use the URL only — `file_path` and `storage_key` are stripped from public payloads.
+- [x] **TTS / thumbnail integration**: `tts.py` and `thumbnail_images.py` write to a temp path then route through the same abstraction. Asset documents now carry `storage_mode` + `storage_key`. Voiceover delete handler routes through `store.delete(...)` so object-mode files are removed from the bucket too.
+- [x] **Retention update**: existing local sweep unchanged; in object mode the sweep additionally deletes expired remote MP4s via `storage.delete(key=...)` and marks the row `expired_artifact`. **Never** touches user/project/script/scene/asset rows for live data — only artifact rows whose physical files have been removed.
+- [x] **Diagnostics**: `/api/admin/diagnostics.storage` now exposes `mode`, `bucket`, `region`, `endpoint_url`, `public_url_strategy`, `public_base_url`, `credentials_present`, `ok`, and a `warning` string set when `STORAGE_MODE=local` AND `DEV_MODE=false` (production with local disk) OR object mode is misconfigured. Diagnostics page renders the storage block with a green/amber state pill + warning banner.
+- [x] **No-leak guarantees**: the public share payload, ZIP exports, and frontend asset cards never render `/app/backend/...`, `file_path`, `output_path`, or `storage_key`.
+- [x] **Env vars** (object mode): `STORAGE_MODE`, `STORAGE_BUCKET`, `STORAGE_REGION`, `STORAGE_ENDPOINT_URL`, `STORAGE_PUBLIC_BASE_URL`, `STORAGE_SIGNED_URL_TTL`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY`, `STORAGE_RETENTION_DAYS`. `boto3==1.42.86` pinned.
+- [x] **Tests**: +9 `TestStorageAbstraction` (local URL shape, path-traversal rejection, status helper, object-mode misconfig warning, mocked boto3 upload + delete + presigned fallback, render local-mode backwards compat, share/zip leak guard, retention safety for user data). **124/124 backend pytest pass** in 180s. Frontend `yarn build` ✅ (`main.81626857.js`, 927K). Health ✅. Render smoke ✅ (existing MP4 served via ingress, 200 / `video/mp4`).
+
 ## Seeded Content
 - `admin@facelessforge.io` / `admin123`
 - `creator@facelessforge.io` / `creator123`

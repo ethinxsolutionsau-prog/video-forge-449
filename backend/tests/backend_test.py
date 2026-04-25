@@ -1945,3 +1945,235 @@ class TestHardening:
         assert "httponly" in joined
         assert "samesite" in joined
 
+
+
+class TestStorageAbstraction:
+    """P2 storage abstraction — local default + object adapter shape +
+    retention safety. Object mode is exercised via direct module unit tests
+    (not via end-to-end render) since this preview pod has no S3 creds."""
+
+    def test_local_save_and_url_shape(self, tmp_path):
+        os.environ["STORAGE_MODE"] = "local"
+        from app import storage as storage_mod
+        storage_mod.reset_for_tests()
+        store = storage_mod.get_storage()
+        assert store.mode == "local"
+        # Write a temp file and save it under a key
+        src = tmp_path / "hello.txt"
+        src.write_text("hi")
+        res = store.save_file(src, "renders/_test/storage_unit.txt", "text/plain")
+        assert res.url.endswith("/api/static/renders/_test/storage_unit.txt") or "/api/static/renders/_test/storage_unit.txt" in res.url
+        assert res.preview_path == "/api/static/renders/_test/storage_unit.txt"
+        assert res.remote is False
+        assert res.file_path and res.file_path.exists()
+        # Cleanup
+        assert store.delete(key="renders/_test/storage_unit.txt") is True
+        assert not res.file_path.exists()
+
+    def test_local_save_rejects_path_traversal(self, tmp_path):
+        from app import storage as storage_mod
+        storage_mod.reset_for_tests()
+        store = storage_mod.get_storage()
+        src = tmp_path / "x.txt"
+        src.write_text("x")
+        with pytest.raises(ValueError):
+            store.save_file(src, "renders/../../../etc/evil", "text/plain")
+
+    def test_storage_status_helper_defaults_local(self):
+        from app import storage as storage_mod
+        os.environ["STORAGE_MODE"] = "local"
+        storage_mod.reset_for_tests()
+        s = storage_mod.storage_status()
+        assert s["mode"] == "local"
+        assert s["ok"] is True
+        assert "retention_days" in s
+
+    def test_object_mode_misconfigured_warning_in_diagnostics(self, admin_session):
+        """When STORAGE_MODE=object and bucket is unset, diagnostics MUST
+        flag the warning so admins notice before public deploy."""
+        prev = os.environ.get("STORAGE_MODE")
+        prev_bucket = os.environ.get("STORAGE_BUCKET")
+        os.environ["STORAGE_MODE"] = "object"
+        os.environ.pop("STORAGE_BUCKET", None)
+        try:
+            from app import storage as storage_mod
+            storage_mod.reset_for_tests()
+            # Direct module test — diagnostics endpoint reads server-side
+            s = storage_mod.storage_status()
+            assert s["mode"] == "object"
+            assert s["ok"] is False
+            assert s["warning"]
+            assert "STORAGE_BUCKET" in s["warning"]
+        finally:
+            os.environ["STORAGE_MODE"] = prev or "local"
+            if prev_bucket is not None:
+                os.environ["STORAGE_BUCKET"] = prev_bucket
+            from app import storage as storage_mod
+            storage_mod.reset_for_tests()
+
+    def test_object_adapter_uses_boto3_with_provided_config(self, monkeypatch, tmp_path):
+        """Object adapter uploads through boto3 and returns the public URL
+        derived from STORAGE_PUBLIC_BASE_URL — no local copy retained."""
+        prev_env = {k: os.environ.get(k) for k in
+                    ("STORAGE_MODE", "STORAGE_BUCKET", "STORAGE_REGION",
+                     "STORAGE_PUBLIC_BASE_URL", "STORAGE_ENDPOINT_URL",
+                     "STORAGE_ACCESS_KEY_ID", "STORAGE_SECRET_ACCESS_KEY")}
+        os.environ["STORAGE_MODE"] = "object"
+        os.environ["STORAGE_BUCKET"] = "ff-test"
+        os.environ["STORAGE_REGION"] = "us-east-1"
+        os.environ["STORAGE_PUBLIC_BASE_URL"] = "https://cdn.example.com/ff-test"
+        os.environ["STORAGE_ENDPOINT_URL"] = "https://s3.example.com"
+        os.environ["STORAGE_ACCESS_KEY_ID"] = "AKIA_FAKE"
+        os.environ["STORAGE_SECRET_ACCESS_KEY"] = "FAKE_SECRET"
+
+        try:
+            from app import storage as storage_mod
+            storage_mod.reset_for_tests()
+            store = storage_mod.get_storage()
+            assert store.mode == "object"
+
+            # Mock boto3 client
+            calls = {"upload": None, "delete": None, "config": None}
+
+            class FakeClient:
+                def upload_file(self, Filename, Bucket, Key, ExtraArgs=None):
+                    calls["upload"] = {"Filename": Filename, "Bucket": Bucket,
+                                       "Key": Key, "ExtraArgs": ExtraArgs}
+                def delete_object(self, Bucket, Key):
+                    calls["delete"] = {"Bucket": Bucket, "Key": Key}
+                def generate_presigned_url(self, op, Params, ExpiresIn):
+                    return f"https://signed.example.com/{Params['Key']}?ttl={ExpiresIn}"
+
+            store._client = FakeClient()
+            src = tmp_path / "thing.mp4"
+            src.write_bytes(b"00")
+            res = store.save_file(src, "renders/_unit/x.mp4", "video/mp4")
+            assert res.remote is True
+            assert res.file_path is None
+            assert res.url == "https://cdn.example.com/ff-test/renders/_unit/x.mp4"
+            assert res.preview_path is None
+            assert calls["upload"]["Bucket"] == "ff-test"
+            assert calls["upload"]["Key"] == "renders/_unit/x.mp4"
+            assert calls["upload"]["ExtraArgs"]["ContentType"] == "video/mp4"
+            # Local file removed after upload
+            assert not src.exists()
+
+            assert store.delete(key="renders/_unit/x.mp4") is True
+            assert calls["delete"]["Key"] == "renders/_unit/x.mp4"
+
+            # Empty public base → presigned URL fallback
+            store.public_base = ""
+            src2 = tmp_path / "thing2.mp4"
+            src2.write_bytes(b"00")
+            res2 = store.save_file(src2, "renders/_unit/y.mp4", "video/mp4")
+            assert res2.url.startswith("https://signed.example.com/renders/_unit/y.mp4")
+        finally:
+            for k, v in prev_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            from app import storage as storage_mod
+            storage_mod.reset_for_tests()
+
+    def test_render_uses_local_storage_by_default(self, creator_session):
+        """Existing render-output URLs MUST stay /api/static/renders/... in
+        local mode — guarantees backward compatibility."""
+        r = creator_session.get(f"{BASE_URL}/api/projects", timeout=15).json()
+        # Find a project that has render history
+        target = None
+        for p in r:
+            jl = creator_session.get(
+                f"{BASE_URL}/api/projects/{p['id']}/render/jobs", timeout=15).json()
+            if any(j["status"] == "completed" and j.get("output_url") for j in jl):
+                target = p
+                break
+        if not target:
+            pytest.skip("no completed render to inspect")
+        jl = creator_session.get(
+            f"{BASE_URL}/api/projects/{target['id']}/render/jobs", timeout=15).json()
+        completed = [j for j in jl if j["status"] == "completed" and j.get("output_url")]
+        j = completed[0]
+        assert "/api/static/renders/" in j["output_url"]
+        assert j.get("output_storage_mode") in ("local", None)
+
+    def test_share_payload_no_internal_paths_leaked(self, creator_session):
+        r = creator_session.get(f"{BASE_URL}/api/projects", timeout=15).json()
+        # Pick a project that's allowed to be shared (>= METADATA_GENERATED)
+        SHAREABLE = {"METADATA_GENERATED", "READY_TO_RENDER", "RENDERING", "COMPLETED"}
+        target = next((p for p in r if p["status"] in SHAREABLE), None)
+        if not target:
+            pytest.skip("no shareable project")
+        en_resp = creator_session.post(
+            f"{BASE_URL}/api/projects/{target['id']}/share", json={}, timeout=15)
+        assert en_resp.status_code == 200, en_resp.text
+        token = en_resp.json()["token"]
+        try:
+            pub = requests.get(f"{BASE_URL}/api/public/share/{token}", timeout=15).json()
+            text = repr(pub)
+            # Internal absolute path must never leak
+            assert "/app/backend/" not in text
+            assert "file_path" not in text
+            assert "storage_key" not in text
+        finally:
+            creator_session.delete(
+                f"{BASE_URL}/api/projects/{target['id']}/share", timeout=15)
+
+    def test_export_zip_render_json_no_file_path(self, creator_session):
+        r = creator_session.get(f"{BASE_URL}/api/projects", timeout=15).json()
+        # Pick the project that has render history
+        target = None
+        for p in r:
+            jl = creator_session.get(
+                f"{BASE_URL}/api/projects/{p['id']}/render/jobs", timeout=15).json()
+            if any(j["status"] == "completed" for j in jl):
+                target = p
+                break
+        if not target:
+            pytest.skip("no completed render")
+        z = creator_session.get(
+            f"{BASE_URL}/api/projects/{target['id']}/export/package.zip", timeout=30)
+        assert z.status_code == 200
+        zf = zipfile.ZipFile(io.BytesIO(z.content))
+        if "render.json" not in zf.namelist():
+            pytest.skip("render.json not in zip")
+        import json as _json
+        data = _json.loads(zf.read("render.json").decode("utf-8"))
+        assert "file_path" not in data
+        assert "storage_key" not in data
+        assert data["url"]
+
+    def test_retention_safe_for_user_data(self, creator_session, admin_session):
+        """Retention must NEVER touch project rows, scenes, scripts, metadata,
+        users, or assets that are not generated artifacts of expired renders."""
+        from dotenv import load_dotenv
+        load_dotenv("/app/backend/.env")
+        from pymongo import MongoClient
+        mc = MongoClient(os.environ["MONGO_URL"])
+        db = mc[os.environ["DB_NAME"]]
+
+        users_before = db.users.count_documents({})
+        projects_before = db.projects.count_documents({})
+        scripts_before = db.scripts.count_documents({})
+        scenes_before = db.scenes.count_documents({})
+        vo_before = db.assets.count_documents({"asset_type": "voiceover_audio"})
+        thumb_before = db.assets.count_documents({"asset_type": "generated_thumbnail"})
+
+        rep = admin_session.post(f"{BASE_URL}/api/admin/retention/run", timeout=30).json()
+        assert "renders_removed" in rep
+
+        users_after = db.users.count_documents({})
+        projects_after = db.projects.count_documents({})
+        scripts_after = db.scripts.count_documents({})
+        scenes_after = db.scenes.count_documents({})
+        vo_after = db.assets.count_documents({"asset_type": "voiceover_audio"})
+        thumb_after = db.assets.count_documents({"asset_type": "generated_thumbnail"})
+        mc.close()
+
+        assert users_after == users_before
+        assert projects_after == projects_before
+        assert scripts_after == scripts_before
+        assert scenes_after == scenes_before
+        assert vo_after == vo_before
+        assert thumb_after == thumb_before
+

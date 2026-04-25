@@ -23,6 +23,8 @@ import uuid
 import wave
 from pathlib import Path
 
+from .storage import get_storage
+
 logger = logging.getLogger("facelessforge.tts")
 
 STATIC_ROOT = Path(__file__).parent.parent / "static" / "audio"
@@ -161,9 +163,11 @@ async def generate_voiceover(
         out_path = dir_path / f"{aid}.wav"
         _write_mock_wav(out_path, duration)
 
-    rel_url = f"/api/static/audio/{project_id}/{aid}.{ext}"
-    abs_base = os.environ.get("FRONTEND_URL", "").rstrip("/")
-    absolute_url = f"{abs_base}{rel_url}" if abs_base else rel_url
+    # Persist via storage backend (local: no-op; object: upload + remove local)
+    store = get_storage()
+    key = f"audio/{project_id}/{aid}.{ext}"
+    content_type = "audio/mpeg" if ext == "mp3" else "audio/wav"
+    saved = store.save_file(out_path, key, content_type=content_type)
 
     return {
         "id": aid,
@@ -177,9 +181,11 @@ async def generate_voiceover(
         "provider": info["provider"] if source != "mock_tts" else "mock_tts",
         "model": info["model"] if source != "mock_tts" else None,
         "duration": duration,
-        "file_path": str(out_path),
-        "preview_url": absolute_url,
-        "preview_path": rel_url,
+        "file_path": str(saved.file_path) if saved.file_path else None,
+        "preview_url": saved.url,
+        "preview_path": saved.preview_path,
+        "storage_mode": store.mode,
+        "storage_key": saved.key,
         "width": None,
         "height": None,
         "tags": ["voiceover", voice_style],

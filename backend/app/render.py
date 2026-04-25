@@ -32,6 +32,7 @@ import httpx
 from PIL import Image, ImageDraw, ImageFont
 
 from .db import get_db
+from .storage import get_storage
 
 logger = logging.getLogger("facelessforge.render")
 
@@ -638,19 +639,25 @@ async def _run_render(job_id: str, project_id: str):
         except Exception:
             pass
 
-        rel_url = f"/api/static/renders/{project_id}/{final.name}"
-        abs_base = os.environ.get("FRONTEND_URL", "").rstrip("/")
-        absolute_url = f"{abs_base}{rel_url}" if abs_base else rel_url
+        # Persist to storage backend (local: no-op; object: upload + remove local)
+        store = get_storage()
+        key = f"renders/{project_id}/{final.name}"
+        try:
+            saved = store.save_file(final, key, content_type="video/mp4")
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"storage upload failed: {e}")
 
         await _set_job(
             job_id,
             status="completed",
             current_step="completed",
             progress=100,
-            output_path=str(final),
-            output_url=absolute_url,
-            output_relative_url=rel_url,
-            file_size=final.stat().st_size,
+            output_path=str(saved.file_path) if saved.file_path else None,
+            output_url=saved.url,
+            output_relative_url=saved.preview_path,
+            output_storage_mode=store.mode,
+            output_storage_key=saved.key,
+            file_size=(saved.file_path.stat().st_size if saved.file_path and saved.file_path.exists() else final.stat().st_size if final.exists() else None),
             duration=duration,
             completed_at=_now(),
             error_message=None,

@@ -217,14 +217,47 @@ export default function AdminDiagnosticsPage() {
           <h2 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
             <HardDrive size={14} className="text-[#00FF66]" /> Storage
           </h2>
-          <Row label="Mode" value={data.storage.mode} />
+          <Row label="Mode" value={
+            <span className="flex items-center gap-2">
+              <span
+                className="font-mono text-[10px] uppercase tracking-widest px-1.5 py-0.5 rounded-sm border"
+                style={
+                  data.storage.mode === "object"
+                    ? { color: "#00FF66", background: "rgba(0,255,102,0.1)", borderColor: "#00FF66" }
+                    : { color: "#FFB020", background: "rgba(255,176,32,0.1)", borderColor: "#FFB020" }
+                }
+              >
+                {data.storage.mode}
+              </span>
+              {data.storage.bucket && (
+                <span className="font-mono text-[11px] text-zinc-500">{data.storage.bucket}</span>
+              )}
+            </span>
+          } ok={data.storage.mode === "object" || data.dev_mode} />
+          {data.storage.public_url_strategy && (
+            <Row label="Public URL strategy" value={data.storage.public_url_strategy} />
+          )}
+          {data.storage.public_base_url && (
+            <Row label="Public base URL" value={data.storage.public_base_url} />
+          )}
+          {data.storage.endpoint_url && (
+            <Row label="Endpoint" value={data.storage.endpoint_url} />
+          )}
+          {data.storage.region && (
+            <Row label="Region" value={data.storage.region} />
+          )}
+          {"credentials_present" in data.storage && (
+            <Row label="Credentials present" value={data.storage.credentials_present ? "yes" : "no"} ok={data.storage.credentials_present} />
+          )}
           <Row label="Retention" value={`${data.storage.retention_days} days`} />
           <Row label="Renders" value={`${fmtBytes(data.storage.renders.bytes)} · ${data.storage.renders.files} files`} />
           <Row label="Thumbnails" value={`${fmtBytes(data.storage.thumbnails.bytes)} · ${data.storage.thumbnails.files} files`} />
           <Row label="Audio" value={`${fmtBytes(data.storage.audio.bytes)} · ${data.storage.audio.files} files`} />
-          <div className="mt-3 px-3 py-2 border border-[#FFB020]/30 bg-[#FFB020]/5 rounded-sm font-mono text-[10px] text-[#FFB020] uppercase tracking-widest">
-            {data.storage.limitation}
-          </div>
+          {data.storage.warning && (
+            <div className="mt-3 px-3 py-2 border border-[#FFB020]/30 bg-[#FFB020]/5 rounded-sm font-mono text-[10px] text-[#FFB020] uppercase tracking-widest">
+              {data.storage.warning}
+            </div>
+          )}
         </section>
 
         {/* Render queue + counts */}

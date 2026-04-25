@@ -1085,16 +1085,19 @@ async def delete_voiceover(project_id: str, asset_id: str, user=Depends(get_curr
     )
     if not asset:
         raise HTTPException(status_code=404, detail="Voiceover not found")
-    # Best-effort file removal
-    fp = asset.get("file_path")
-    if fp:
-        try:
+    # Best-effort artifact removal via storage abstraction
+    try:
+        from .storage import get_storage as _gs
+        store = _gs()
+        if asset.get("storage_key"):
+            store.delete(key=asset["storage_key"])
+        elif asset.get("file_path"):
             from pathlib import Path as _P
-            p = _P(fp)
+            p = _P(asset["file_path"])
             if p.exists() and p.is_file():
                 p.unlink()
-        except Exception:  # noqa: BLE001
-            pass
+    except Exception:  # noqa: BLE001
+        pass
     await db.assets.delete_one({"id": asset_id, "project_id": project_id})
     if project.get("selected_voiceover_asset_id") == asset_id:
         await db.projects.update_one(
@@ -1187,6 +1190,7 @@ async def render_cancel_job(project_id: str, job_id: str, user=Depends(get_curre
 
 # ============================ ADMIN DIAGNOSTICS / RETENTION ============================
 from . import retention as retention_service
+from .storage import storage_status as storage_status_fn
 
 
 def _provider_modes() -> dict:
@@ -1253,9 +1257,8 @@ async def admin_diagnostics(_admin=Depends(require_roles("admin"))):
         },
         "providers": _provider_modes(),
         "storage": {
-            "mode": "local_disk",
-            "limitation": "Render artifacts live on the pod's local disk; replaced on pod recreate. Use object storage for HA.",
             **retention_service.disk_usage_report(),
+            **storage_status_fn(),
         },
         "render_queue": {
             "active_jobs": active_renders,

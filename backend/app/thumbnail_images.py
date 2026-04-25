@@ -19,6 +19,8 @@ import os
 import uuid
 from pathlib import Path
 
+from .storage import get_storage
+
 logger = logging.getLogger("facelessforge.thumbnail_images")
 
 STATIC_ROOT = Path(__file__).parent.parent / "static" / "thumbs"
@@ -186,11 +188,12 @@ async def generate_thumbnail_images(
 
         file_path = dir_path / f"{asset_id}.{ext}"
         file_path.write_bytes(image_bytes)
-        rel_url = f"/api/static/thumbs/{project_id}/{asset_id}.{ext}"
 
-        # Absolute URL for og:image
-        abs_base = os.environ.get("FRONTEND_URL", "").rstrip("/")
-        absolute_url = f"{abs_base}{rel_url}" if abs_base else rel_url
+        # Persist via storage backend
+        store = get_storage()
+        key = f"thumbs/{project_id}/{asset_id}.{ext}"
+        content_type = "image/png" if ext == "png" else "image/svg+xml"
+        saved = store.save_file(file_path, key, content_type=content_type)
 
         out.append({
             "id": asset_id,
@@ -200,9 +203,11 @@ async def generate_thumbnail_images(
             "asset_type": "generated_thumbnail",
             "source": source,
             "external_id": None,
-            "preview_url": absolute_url,
-            "preview_path": rel_url,
-            "file_path": str(file_path),
+            "preview_url": saved.url,
+            "preview_path": saved.preview_path,
+            "file_path": str(saved.file_path) if saved.file_path else None,
+            "storage_mode": store.mode,
+            "storage_key": saved.key,
             "width": 1280,
             "height": 720,
             "duration": None,

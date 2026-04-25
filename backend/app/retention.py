@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .db import get_db
+from .storage import get_storage
 
 logger = logging.getLogger("facelessforge.retention")
 
@@ -43,10 +44,12 @@ async def run_cleanup_once() -> dict:
         "render_workdirs_removed": 0,
         "orphan_project_dirs_removed": 0,
         "stale_jobs_marked_failed": 0,
+        "remote_objects_removed": 0,
         "bytes_freed": 0,
         "retention_days": _retention_days(),
         "ran_at": datetime.now(timezone.utc).isoformat(),
     }
+    store = get_storage()
 
     # 1. Stale render workdirs (always — these are temporary)
     if RENDERS.exists():
@@ -102,6 +105,31 @@ async def run_cleanup_once() -> dict:
                         )
                 except Exception as e:  # noqa: BLE001
                     logger.warning("mp4 cleanup failed for %s: %s", mp4, e)
+
+    # 2b. Object-storage expiry: for renders past retention with a storage_key,
+    # ask the storage backend to delete. Safe — never touches project/user data.
+    if store.mode == "object":
+        cutoff_dt = datetime.fromtimestamp(cutoff_ts, tz=timezone.utc)
+        async for job in db.render_jobs.find(
+            {"status": "completed",
+             "storage_mode": "object",
+             "storage_key": {"$ne": None},
+             "completed_at": {"$lt": cutoff_dt}},
+            {"_id": 0, "id": 1, "project_id": 1, "storage_key": 1},
+        ):
+            try:
+                if store.delete(key=job["storage_key"]):
+                    report["remote_objects_removed"] += 1
+                    await db.render_jobs.update_one(
+                        {"id": job["id"]},
+                        {"$set": {"status": "expired_artifact",
+                                  "output_url": None, "output_path": None,
+                                  "storage_key": None,
+                                  "current_step": "expired_artifact",
+                                  "error_message": "Render artifact removed by retention policy"}},
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("remote retention delete failed for %s: %s", job.get("storage_key"), e)
 
     # 3. Orphan thumbnail / audio dirs (project deleted)
     for root in (THUMBS, AUDIO):
