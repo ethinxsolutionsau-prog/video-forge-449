@@ -13,6 +13,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from app.db import init_db, ensure_indexes, close_db
 from app.routes import router as api_router
+from app.external_api import router as external_router
 from app.seed import run_seed
 from app.system import ensure_ffmpeg_available
 
@@ -113,6 +114,8 @@ async def health_deep():
 
 
 app.include_router(api_router)
+# External API: thin wrapper exposed at /api/external/...
+app.include_router(external_router, prefix="/api")
 
 # Static mount for generated images. Served via /api/static/thumbs/{project_id}/{asset_id}.{ext}
 # so it routes through the k8s ingress /api/* rule.

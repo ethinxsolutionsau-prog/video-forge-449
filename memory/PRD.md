@@ -150,8 +150,7 @@ Build a production-ready SaaS web app **FacelessForge**: a creator-first faceles
 - [x] **Diagnostics**: `/api/admin/diagnostics.storage` now exposes `mode`, `bucket`, `region`, `endpoint_url`, `public_url_strategy`, `public_base_url`, `credentials_present`, `ok`, and a `warning` string set when `STORAGE_MODE=local` AND `DEV_MODE=false` (production with local disk) OR object mode is misconfigured. Diagnostics page renders the storage block with a green/amber state pill + warning banner.
 - [x] **No-leak guarantees**: the public share payload, ZIP exports, and frontend asset cards never render `/app/backend/...`, `file_path`, `output_path`, or `storage_key`.
 - [x] **Env vars** (object mode): `STORAGE_MODE`, `STORAGE_BUCKET`, `STORAGE_REGION`, `STORAGE_ENDPOINT_URL`, `STORAGE_PUBLIC_BASE_URL`, `STORAGE_SIGNED_URL_TTL`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY`, `STORAGE_RETENTION_DAYS`. `boto3==1.42.86` pinned.
-### Phase 8b — Deep health probe (2026-02)
-- [x] **`/api/health/deep`**: new endpoint that runs a Mongo `ping` + a live storage round-trip probe (upload → verify → delete). Always returns 200 so monitoring tools can read JSON; inspect `ok`/`mongo.ok`/`storage.ok` per-section.
+### Phase 8b — Deep health probe (2026-02)- [x] **`/api/health/deep`**: new endpoint that runs a Mongo `ping` + a live storage round-trip probe (upload → verify → delete). Always returns 200 so monitoring tools can read JSON; inspect `ok`/`mongo.ok`/`storage.ok` per-section.
   - Local probe writes a 10-byte file to `static/health/probe-{ts}-{rand}.txt`, verifies size, deletes — leaves no artifacts behind.
   - Object probe (S3-compatible) does `put_object` → `head_object` → `delete_object` against `health/probe-{ts}-{rand}.txt`. Bounded with a 10s timeout. Pre-flights `STORAGE_BUCKET` to give a clean error if missing.
   - Errors are passed through `_safe_error()` which redacts known credential patterns (`AKIA`, `AWS_SECRET`, `STORAGE_SECRET`, `X-Amz-Signature`, presigned `Signature=` chunks) and caps length at 240 chars.
@@ -160,6 +159,20 @@ Build a production-ready SaaS web app **FacelessForge**: a creator-first faceles
 
 ### Files changed (Phase 8b)
 - Modified: `/app/backend/app/storage.py` (added `probe()` to backend interface + Local/S3 impls + `_safe_error()` + redaction patterns), `/app/backend/server.py` (added `/api/health/deep`), `/app/backend/tests/backend_test.py` (+`TestHealthDeep`)
+
+### Phase 9 — External render API for ETHINX VideoForge (2026-02)
+- [x] **`POST /api/external/render-video`** — header-keyed wrapper that creates a project, seeds script + scenes from the ETHINX payload, auto-generates metadata + thumbnail (Gemini Nano Banana / mock SVG fallback) + voiceover (OpenAI TTS / silent-WAV fallback), then calls the existing `queue_render(project_id)` (render pipeline untouched). Returns `{job_id, project_id, status:"queued", status_url}` immediately — render runs async.
+- [x] **`GET /api/external/render-video-status?job_id=...`** — same key, flattened public-shape: `{job_id, project_id, status, progress, current_step, video_url, duration, width:1920, height:1080, error}`. Internal status names mapped to public set: `queued|running|completed|failed|cancelled|expired`. `video_url` only populated when `status=="completed"`.
+- [x] **Auth**: `X-FacelessForge-Key` header compared with `secrets.compare_digest`. `EXTERNAL_RENDER_ENABLED=false` → 404 (surface hidden). Misconfigured (`EXTERNAL_RENDER_API_KEY` empty) → 503. Wrong key → 401.
+- [x] **Project ownership**: a system creator user `external-renderer@facelessforge.io` is created idempotently and owns all externally-queued projects. ETHINX-source projects carry `external_source` and `external_asset_id` fields (no schema change required — just two new optional fields on the project doc).
+- [x] **Scene mapping**: payload `scene_breakdown` maps 1:1 to internal scenes (timing inferred from `duration` if `start_time/end_time` missing). When `scene_breakdown` is empty, the script is auto-chunked by sentence into ~6s scenes seeded with `stock_footage_terms`.
+- [x] **No leak**: external responses contain only public fields. Verified via test (`/app/backend/`, `file_path`, `output_path`, `storage_key` rejected from response repr).
+- [x] **Env vars added**: `EXTERNAL_RENDER_ENABLED=true|false`, `EXTERNAL_RENDER_API_KEY=<key>`, optional `EXTERNAL_SYSTEM_USER_EMAIL=external-renderer@facelessforge.io`. No `.env` keys removed.
+- [x] **Tests**: +9 `TestExternalRenderAPI` (disabled→404, missing/invalid key 401 on both endpoints, valid request creates project + script + scenes + selected thumb/voice + queued job, status endpoint shape, completion → MP4 + no path leak, unknown job 404, payload validation 422, fallback scene chunking when no breakdown). **141/141 backend pytest pass** in 262s.
+
+### Files changed (Phase 9)
+- New: `/app/backend/app/external_api.py`
+- Modified: `/app/backend/server.py` (router include), `/app/backend/.env` (added 2 keys), `/app/backend/tests/backend_test.py` (+`TestExternalRenderAPI`)
 
 ### Deep health response shape
 ```json

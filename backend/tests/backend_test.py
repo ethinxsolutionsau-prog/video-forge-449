@@ -2371,3 +2371,195 @@ class TestHealthDeep:
         d = r.json()
         assert d == {"ok": True, "service": "facelessforge"}
 
+
+
+class TestExternalRenderAPI:
+    """External render wrapper for ETHINX VideoForge.
+
+    Auth: header X-FacelessForge-Key matching env EXTERNAL_RENDER_API_KEY.
+    Toggle: env EXTERNAL_RENDER_ENABLED. Render pipeline is NOT modified —
+    we call the same queue_render() the project UI uses."""
+
+    BASE = f"{BASE_URL}/api/external"
+
+    @pytest.fixture(scope="class")
+    def ext_key(self):
+        # Read what the running server actually uses
+        from dotenv import load_dotenv
+        load_dotenv("/app/backend/.env")
+        k = os.environ.get("EXTERNAL_RENDER_API_KEY")
+        assert k, "EXTERNAL_RENDER_API_KEY must be set for these tests"
+        return k
+
+    @pytest.fixture
+    def small_payload(self):
+        return {
+            "source": "ethinx_videoforge",
+            "external_asset_id": f"ethinx-{uuid.uuid4().hex[:8]}",
+            "title": "TEST_ext External Render",
+            "script": ("Microservices are everywhere. We explain why. "
+                       "Isolated failures. Independent scaling. Polyglot teams."),
+            "scene_breakdown": [
+                {"scene_number": 1, "duration": 4,
+                 "narration_text": "Microservices are everywhere.",
+                 "visual_direction": "Tech b-roll",
+                 "caption_text": "Microservices everywhere",
+                 "search_terms": ["tech office"]},
+                {"scene_number": 2, "duration": 4,
+                 "narration_text": "We explain why.",
+                 "visual_direction": "Code on screens",
+                 "caption_text": "Why?"},
+                {"scene_number": 3, "duration": 4,
+                 "narration_text": "Isolated failures. Independent scaling. Polyglot teams.",
+                 "visual_direction": "Architecture diagrams",
+                 "caption_text": "Three reasons"},
+            ],
+            "stock_footage_terms": ["microservices", "cloud", "office"],
+            "voiceover_notes": "energetic upbeat male",
+        }
+
+    def test_disabled_returns_404(self, small_payload, monkeypatch):
+        # Toggle disabled at the server boundary — restart not feasible here, so
+        # this test exercises the in-process module guard via a direct call.
+        # The HTTP-level enforcement is verified by other tests when key invalid.
+        from app import external_api
+        prev = os.environ.get("EXTERNAL_RENDER_ENABLED")
+        os.environ["EXTERNAL_RENDER_ENABLED"] = "false"
+        try:
+            with pytest.raises(Exception) as exc:
+                external_api._require_external_key("anything")
+            assert "404" in str(exc.value) or "Not Found" in str(exc.value)
+        finally:
+            if prev is None:
+                os.environ.pop("EXTERNAL_RENDER_ENABLED", None)
+            else:
+                os.environ["EXTERNAL_RENDER_ENABLED"] = prev
+
+    def test_missing_key_rejected(self, small_payload):
+        r = requests.post(f"{self.BASE}/render-video", json=small_payload, timeout=15)
+        assert r.status_code == 401
+
+    def test_invalid_key_rejected(self, small_payload):
+        r = requests.post(f"{self.BASE}/render-video", json=small_payload,
+                          headers={"X-FacelessForge-Key": "bad-key-xyz"}, timeout=15)
+        assert r.status_code == 401
+
+    def test_status_missing_key_rejected(self):
+        r = requests.get(f"{self.BASE}/render-video-status?job_id=anything", timeout=15)
+        assert r.status_code == 401
+
+    def test_status_invalid_key_rejected(self):
+        r = requests.get(f"{self.BASE}/render-video-status?job_id=anything",
+                         headers={"X-FacelessForge-Key": "bad"}, timeout=15)
+        assert r.status_code == 401
+
+    def test_valid_request_creates_project_and_job(self, small_payload, ext_key):
+        r = requests.post(
+            f"{self.BASE}/render-video", json=small_payload,
+            headers={"X-FacelessForge-Key": ext_key}, timeout=120,
+        )
+        assert r.status_code == 200, r.text
+        d = r.json()
+        for k in ("job_id", "project_id", "status", "status_url"):
+            assert k in d
+        assert d["status"] == "queued"
+        assert d["status_url"] == f"/api/external/render-video-status?job_id={d['job_id']}"
+
+        # Verify project + script + scenes were seeded server-side
+        from dotenv import load_dotenv
+        load_dotenv("/app/backend/.env")
+        from pymongo import MongoClient
+        mc = MongoClient(os.environ["MONGO_URL"])
+        db = mc[os.environ["DB_NAME"]]
+        try:
+            project = db.projects.find_one({"id": d["project_id"]}, {"_id": 0})
+            assert project is not None
+            assert project["external_source"] == "ethinx_videoforge"
+            assert project["external_asset_id"] == small_payload["external_asset_id"]
+            assert project["name"] == small_payload["title"]
+            script = db.scripts.find_one({"project_id": d["project_id"]}, {"_id": 0})
+            assert script and script["full_script"] == small_payload["script"]
+            scenes = list(db.scenes.find({"project_id": d["project_id"]}, {"_id": 0}).sort("scene_number", 1))
+            assert len(scenes) == len(small_payload["scene_breakdown"])
+            for got, sent in zip(scenes, small_payload["scene_breakdown"]):
+                assert got["narration_text"] == sent["narration_text"]
+                assert got["caption_text"] == sent["caption_text"]
+            # Selected thumbnail + voiceover were auto-generated
+            assert project.get("selected_thumbnail_asset_id"), "thumbnail not auto-selected"
+            assert project.get("selected_voiceover_asset_id"), "voiceover not auto-selected"
+        finally:
+            mc.close()
+
+        # Status endpoint returns shape immediately
+        s = requests.get(
+            f"{self.BASE}/render-video-status?job_id={d['job_id']}",
+            headers={"X-FacelessForge-Key": ext_key}, timeout=15,
+        )
+        assert s.status_code == 200
+        sj = s.json()
+        for k in ("job_id", "project_id", "status", "progress", "video_url",
+                  "duration", "width", "height", "error", "current_step"):
+            assert k in sj
+        assert sj["width"] == 1920
+        assert sj["height"] == 1080
+        # Status is one of the public state words
+        assert sj["status"] in ("queued", "running", "completed", "failed", "cancelled")
+        if sj["status"] != "completed":
+            assert sj["video_url"] is None
+
+        # Poll up to 90s for completion (3 short scenes ~ <30s)
+        final = sj
+        for _ in range(45):
+            time.sleep(2)
+            sr = requests.get(
+                f"{self.BASE}/render-video-status?job_id={d['job_id']}",
+                headers={"X-FacelessForge-Key": ext_key}, timeout=15,
+            ).json()
+            final = sr
+            if sr["status"] in ("completed", "failed", "cancelled"):
+                break
+        assert final["status"] == "completed", f"final={final}"
+        assert final["progress"] == 100
+        assert final["video_url"] and "/api/static/renders/" in final["video_url"]
+        assert final["duration"] and final["duration"] > 1
+        # No internal file path leakage
+        text = repr(final)
+        assert "/app/backend/" not in text
+        assert "file_path" not in text
+        assert "output_path" not in text
+        assert "storage_key" not in text
+
+    def test_unknown_job_404(self, ext_key):
+        r = requests.get(f"{self.BASE}/render-video-status?job_id=unknown-job-id-zzz",
+                         headers={"X-FacelessForge-Key": ext_key}, timeout=15)
+        assert r.status_code == 404
+
+    def test_payload_validation_rejects_short_script(self, ext_key):
+        bad = {"title": "x", "script": "short"}  # < 10 chars
+        r = requests.post(f"{self.BASE}/render-video", json=bad,
+                          headers={"X-FacelessForge-Key": ext_key}, timeout=15)
+        assert r.status_code == 422
+
+    def test_payload_falls_back_when_no_scene_breakdown(self, ext_key):
+        body = {
+            "title": "TEST_ext fallback scenes",
+            "script": ("This is a fallback script. It has multiple sentences. "
+                       "Each sentence becomes a scene. "
+                       "FacelessForge auto-chunks for ETHINX."),
+        }
+        r = requests.post(f"{self.BASE}/render-video", json=body,
+                          headers={"X-FacelessForge-Key": ext_key}, timeout=120)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        # Verify scenes were auto-generated
+        from dotenv import load_dotenv
+        load_dotenv("/app/backend/.env")
+        from pymongo import MongoClient
+        mc = MongoClient(os.environ["MONGO_URL"])
+        db = mc[os.environ["DB_NAME"]]
+        try:
+            scenes = list(db.scenes.find({"project_id": d["project_id"]}, {"_id": 0}))
+            assert len(scenes) >= 2  # at least 2 sentences
+        finally:
+            mc.close()
+
