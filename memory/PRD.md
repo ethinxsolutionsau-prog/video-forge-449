@@ -87,6 +87,21 @@ Build a production-ready SaaS web app **FacelessForge**: a creator-first faceles
   - **Public share page**: when `selected_thumbnail_asset_id` is set, the public payload includes `selected_thumbnail_url`; the share page renders it as a 16:9 hero above the title and uses it as `og:image` / `twitter:image`. Falls back to `og-share-default.svg`.
   - **81/81 backend pytest** (+14 new across TestAutoAttach, TestDBIndex, TestThumbnailImages) + frontend Playwright verified. Zero issues found.
 
+### Phase 5 — 2026-02 (shipping now)
+- [x] **Voiceover TTS** (OpenAI `tts-1` via Emergent LLM key, deterministic mock-WAV fallback):
+  - `app/tts.py`: `generate_voiceover(text, voice_style, project_id, asset_id, scene_id)` returns normalised asset dict. 7 voice styles (narrator/energetic/documentary/calm/dramatic/corporate/mysterious) mapped to OpenAI voices; mock WAV = silent PCM at 22050Hz with realistic duration (~150 wpm). `USE_MOCK_TTS=true` in dev; drops to real API when flag flipped + key present. ElevenLabs drop-in ready via `VOICE_STYLE_MAP[...].eleven_voice_hint`.
+  - Endpoints: `GET /api/tts/meta`, `POST /api/projects/{pid}/voiceover/generate-script`, `POST /api/projects/{pid}/scenes/{sid}/voiceover/generate`, `POST /api/projects/{pid}/voiceover/{aid}/select`, `POST .../reject`, `DELETE .../voiceover/{aid}` (scrubs file too).
+  - Selection model: **both** library + select-one. Full-script exclusivity via `project.selected_voiceover_asset_id`; per-scene exclusivity by auto-demoting prior selected on new scene generation.
+  - Audio served at `/api/static/audio/{project_id}/{asset_id}.{wav|mp3}` through k8s ingress.
+  - `VoiceoverPanel`: voice-style picker (pill buttons), full-script section (generate/regenerate + card grid with audio player, select, reject, download, delete), per-scene section (per-scene generate + audio card grid). Mock/Live/Selected/Rejected badges. Responsive layout.
+  - ScenePlanner: inline mini audio chip on rows where the scene has an active VO (`scene-voiceover-<id>`).
+  - Project Overview: 5th tile for voiceover showing `X/Y scenes · full ready`.
+  - AssetLibrary: new "Voiceover" filter + audio-card layout with inline `<audio controls>`; delete works for voiceovers.
+  - Public share: `selected_voiceover` (preview_url, voice_style, duration only — no provider/cost/file_path leak) rendered as `<audio controls>` preview on `/s/{token}`.
+  - ZIP export: new `voiceovers.json` listing all voiceovers with id, scene_id, scene_number, voice_style, duration, provider, mock, status, preview_url, text_excerpt, is_full_script, selected_for_project.
+  - **96/96 backend pytest** (+15 new TestVoiceover: meta, auth, full-script mock, default voice fallback, scene generation, demote-prior, unknown-scene 404, cross-user 403, full-script select exclusivity, reject clears pointer, share surfacing + no-leak, ZIP voiceovers.json, delete-removes-file).
+  - Frontend Playwright E2E verified: tab mounts, style picker, full/scene generation, select/reject/download/delete, asset library voiceover filter, overview tile, scene planner audio chip, public share player. Zero issues.
+
 ## Seeded Content
 - `admin@facelessforge.io` / `admin123`
 - `creator@facelessforge.io` / `creator123`
@@ -116,8 +131,9 @@ Build a production-ready SaaS web app **FacelessForge**: a creator-first faceles
 - CORS uses `*` + credentials (works because frontend/API are same-origin in preview; restrict for non-preview prod).
 
 ## Next Tasks List
-1. Ship image generation for thumbnails (Gemini Nano Banana) — adds immediate visual wow.
-2. Add voiceover TTS (ElevenLabs/OpenAI) so scripts can be heard, not just read.
-3. Wire forgot-password + reset-password flow.
-4. Add public shareable link for COMPLETED projects (lead magnet / showcase).
-5. Add billing & cost-limit enforcement.
+1. Phase 6 — real ffmpeg render queue (P1): queued job system that stitches scene voiceovers + stock footage + selected thumbnail into a final MP4.
+2. Refactor `routes.py` into domain routers (`auth`, `projects`, `assets`, `tts`, `thumbnails`, `share`, `admin`) — non-behavioural pass to keep growth sustainable.
+3. ElevenLabs TTS as premium provider (drop-in via `tts.py` VOICE_STYLE_MAP).
+4. Real-time SSE streaming for script generation.
+5. Stripe billing + cost-limit enforcement (currently cost_estimate tracked but not enforced).
+6. Admin Thumbnail Gallery `/admin/thumbnails` (deferred from Phase 5 to keep scope tight).
