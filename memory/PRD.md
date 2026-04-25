@@ -124,6 +124,7 @@ Build a production-ready SaaS web app **FacelessForge**: a creator-first faceles
   - Public share `/s/{token}`: when a completed render exists, the hero block renders the final MP4 (`share-final-video`) using the selected thumbnail as poster — replaces the static image hero. Public payload exposes `final_video.{url, duration, width, height}` only — no `file_path` / `output_path` / job ids leaked.
   - ZIP export adds `render.json` with codec/dimensions/url/duration (no internal paths).
   - **108/108 backend pytest** (+12 new `TestRenderQueue`: preflight ok / blocks empty / start blocked when unmet / cross-user 403 / extra-body fields ignored / full render completes + ffprobe-validated h264 1920×1080 / concurrent render 409 / jobs list+get / 404 / ZIP render.json / share final_video / viewer 403). Frontend Playwright E2E verified end-to-end: full ~177s render flow with progress polling, completed video player + download, overview embed, public share final video, and prerequisite gating on a fresh empty project. Zero issues.
+  - **Deploy hardening**: ffmpeg binary resolved at module load — prefers system `ffmpeg` (apt) and falls back to the static binary shipped by the `imageio-ffmpeg` Python package, so renders survive a fresh container without apt packages. Duration probe uses ffprobe when available and falls back to scene-duration estimation otherwise. `imageio-ffmpeg==0.6.0` pinned in `requirements.txt`.
 
 ## Seeded Content
 - `admin@facelessforge.io` / `admin123`

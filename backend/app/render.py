@@ -38,6 +38,30 @@ logger = logging.getLogger("facelessforge.render")
 STATIC_RENDERS = Path(__file__).parent.parent / "static" / "renders"
 STATIC_RENDERS.mkdir(parents=True, exist_ok=True)
 
+
+def _resolve_ffmpeg_bin() -> str:
+    """Resolve ffmpeg binary. Prefer system ffmpeg if present (apt), else fall
+    back to the static binary shipped by imageio-ffmpeg (pip), so renders survive
+    a fresh container without apt packages."""
+    sys_bin = shutil.which("ffmpeg")
+    if sys_bin:
+        return sys_bin
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001
+        return "ffmpeg"  # last resort — will surface a clear error in render job
+
+
+def _resolve_ffprobe_bin() -> Optional[str]:
+    """ffprobe is optional (only used for duration probe). System apt ships it;
+    imageio-ffmpeg does not. If absent, we silently skip the probe step."""
+    return shutil.which("ffprobe")
+
+
+FFMPEG_BIN = _resolve_ffmpeg_bin()
+FFPROBE_BIN = _resolve_ffprobe_bin()
+
 WIDTH = 1920
 HEIGHT = 1080
 FPS = 30
@@ -335,7 +359,7 @@ async def _resolve_audio(project: dict, scenes: list[dict], assets: list[dict],
             list_file = work_dir / "audio_concat.txt"
             list_file.write_text("\n".join(f"file '{p.as_posix()}'" for p in ordered) + "\n")
             out = work_dir / "audio_full.wav"
-            cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            cmd = [FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0",
                    "-i", str(list_file), "-c", "copy", str(out)]
             ok, _ = await _run_ffmpeg(cmd)
             if ok and out.exists():
@@ -365,7 +389,7 @@ async def _run_ffmpeg(cmd: list[str], *, timeout: int = HARD_TIMEOUT_SECONDS) ->
 
 def _ffmpeg_normalise_image(src: Path, duration: float, out: Path) -> list[str]:
     return [
-        "ffmpeg", "-y",
+        FFMPEG_BIN, "-y",
         "-loop", "1", "-t", f"{duration:.2f}",
         "-i", str(src),
         "-vf", (
@@ -381,7 +405,7 @@ def _ffmpeg_normalise_image(src: Path, duration: float, out: Path) -> list[str]:
 
 def _ffmpeg_normalise_video(src: Path, duration: float, out: Path) -> list[str]:
     return [
-        "ffmpeg", "-y",
+        FFMPEG_BIN, "-y",
         "-i", str(src),
         "-t", f"{duration:.2f}",
         "-vf", (
@@ -548,7 +572,7 @@ async def _run_render(job_id: str, project_id: str):
         concat_list.write_text("\n".join(f"file '{c.as_posix()}'" for c in clips) + "\n")
         silent_out = work_dir / "video_silent.mp4"
         ok, err = await _run_ffmpeg([
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0",
             "-i", str(concat_list), "-c", "copy", str(silent_out),
         ])
         if not ok:
@@ -561,7 +585,7 @@ async def _run_render(job_id: str, project_id: str):
         final = out_dir / f"{job_id}.mp4"
         if audio_path and audio_path.exists():
             cmd = [
-                "ffmpeg", "-y",
+                FFMPEG_BIN, "-y",
                 "-i", str(silent_out),
                 "-i", str(audio_path),
                 "-map", "0:v", "-map", "1:a",
@@ -574,7 +598,7 @@ async def _run_render(job_id: str, project_id: str):
         else:
             # Add silent AAC audio so the MP4 still has an audio stream
             cmd = [
-                "ffmpeg", "-y",
+                FFMPEG_BIN, "-y",
                 "-i", str(silent_out),
                 "-f", "lavfi", "-i", "anullsrc=cl=stereo:r=48000",
                 "-map", "0:v", "-map", "1:a",
@@ -588,18 +612,25 @@ async def _run_render(job_id: str, project_id: str):
         if not ok:
             raise RuntimeError(f"mux failed: {err[-300:]}")
 
-        # Probe duration via ffprobe (cheap)
+        # Probe duration via ffprobe (cheap; optional — depends on apt ffprobe)
         duration = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1", str(final),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            )
-            out, _ = await proc.communicate()
-            duration = float(out.decode().strip())
-        except Exception:
-            pass
+        if FFPROBE_BIN:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    FFPROBE_BIN, "-v", "error", "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1", str(final),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                )
+                out, _ = await proc.communicate()
+                duration = float(out.decode().strip())
+            except Exception:
+                pass
+        if duration is None:
+            # Fallback: estimate from scene durations + intro
+            est = INTRO_DURATION_SECONDS
+            for s in scenes:
+                est += max(2.0, float((s.get("end_time") or 0) - (s.get("start_time") or 0)) or 4.0)
+            duration = round(est, 2)
 
         # Cleanup workdir, keep final
         try:
