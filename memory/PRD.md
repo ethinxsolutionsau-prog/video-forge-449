@@ -102,6 +102,29 @@ Build a production-ready SaaS web app **FacelessForge**: a creator-first faceles
   - **96/96 backend pytest** (+15 new TestVoiceover: meta, auth, full-script mock, default voice fallback, scene generation, demote-prior, unknown-scene 404, cross-user 403, full-script select exclusivity, reject clears pointer, share surfacing + no-leak, ZIP voiceovers.json, delete-removes-file).
   - Frontend Playwright E2E verified: tab mounts, style picker, full/scene generation, select/reject/download/delete, asset library voiceover filter, overview tile, scene planner audio chip, public share player. Zero issues.
 
+### Phase 6 — 2026-02 (shipping now)
+- [x] **Real ffmpeg render queue** — produces a downloadable `1920×1080 30fps H.264 + AAC` MP4 from the project package.
+  - `app/render.py`: server-built ffmpeg pipeline. Steps: `validating → preparing_assets → rendering (per-scene encoding + concat + audio mux) → completed`. Async background task per project; `_LOCKS` per project_id prevents concurrent renders; `cancel_render` interrupts the task and marks `cancelled`. 10-minute hard timeout (`RENDER_TIMEOUT_SECONDS`).
+  - Pipeline:
+    1. **Intro**: selected thumbnail (PNG) → 1.5s clip. Mock SVG thumbs / unloadable images fall back to a Pillow-rendered PNG caption frame.
+    2. **Scenes**: each scene becomes a normalised 1920×1080 30fps H.264 clip at `end_time - start_time` duration. Source = first attached stock asset (download via httpx with size cap; `image/*` and `video/*` content-types only). On any failure → Pillow caption frame.
+    3. **Concat**: ffmpeg concat demuxer (`-c copy`) into a single silent video.
+    4. **Audio**: prefer `project.selected_voiceover_asset_id` (full-script); else concat per-scene voiceovers in scene order; else silent AAC track from `anullsrc`.
+    5. **Mux + faststart**: `-c:a aac -b:a 192k -movflags +faststart`.
+  - Endpoints (all server-builds ffmpeg args; the only body field is `force` — extra fields ignored):
+    - `GET /api/projects/{pid}/render/preflight` — checklist (script, scenes, metadata, thumbnail, voiceover, scene_assets) with hints; safe scene_assets coverage warning.
+    - `POST /api/projects/{pid}/render/start` — 400 if prereqs unmet, 409 if a job is already active, 200 with `{id, status:queued, ...}` otherwise.
+    - `GET /api/projects/{pid}/render/jobs` and `GET /...{job_id}` for polling.
+    - `POST /api/projects/{pid}/render/jobs/{job_id}/cancel`.
+  - MP4 saved to `/app/backend/static/renders/{project_id}/{job_id}.mp4`, served via existing `/api/static/...` ingress mount. Job persists `output_url`, `output_path` (internal only), `duration`, `file_size`, `progress`, `current_step`, `error_message`.
+  - Project `status` flips to `COMPLETED` on success and `rendered_video_asset_id` is set to the latest job id.
+  - Security: zero raw ffmpeg args from frontend; downloads capped at 60MB/asset and content-type-filtered; output paths sanitised to project workdir; cross-user `_ensure_project_access` on every endpoint; viewer role blocked at write endpoints; concurrent-render guard via DB + asyncio Lock.
+  - `RenderPanel` (full rewrite): prerequisite checklist with green/red tiles + hints, intro thumbnail + voiceover audio preview cards, Start button (disabled until preflight ok), live progress bar with current step name and 2.5s polling, Cancel button while active, completed `<video>` player with `download` link, Retry button on failure, render history list.
+  - Project Overview: 6th "Final video" tile showing render state; embedded `<video>` once completed.
+  - Public share `/s/{token}`: when a completed render exists, the hero block renders the final MP4 (`share-final-video`) using the selected thumbnail as poster — replaces the static image hero. Public payload exposes `final_video.{url, duration, width, height}` only — no `file_path` / `output_path` / job ids leaked.
+  - ZIP export adds `render.json` with codec/dimensions/url/duration (no internal paths).
+  - **108/108 backend pytest** (+12 new `TestRenderQueue`: preflight ok / blocks empty / start blocked when unmet / cross-user 403 / extra-body fields ignored / full render completes + ffprobe-validated h264 1920×1080 / concurrent render 409 / jobs list+get / 404 / ZIP render.json / share final_video / viewer 403). Frontend Playwright E2E verified end-to-end: full ~177s render flow with progress polling, completed video player + download, overview embed, public share final video, and prerequisite gating on a fresh empty project. Zero issues.
+
 ## Seeded Content
 - `admin@facelessforge.io` / `admin123`
 - `creator@facelessforge.io` / `creator123`
@@ -131,9 +154,9 @@ Build a production-ready SaaS web app **FacelessForge**: a creator-first faceles
 - CORS uses `*` + credentials (works because frontend/API are same-origin in preview; restrict for non-preview prod).
 
 ## Next Tasks List
-1. Phase 6 — real ffmpeg render queue (P1): queued job system that stitches scene voiceovers + stock footage + selected thumbnail into a final MP4.
-2. Refactor `routes.py` into domain routers (`auth`, `projects`, `assets`, `tts`, `thumbnails`, `share`, `admin`) — non-behavioural pass to keep growth sustainable.
+1. Refactor `routes.py` into domain routers (`auth`, `projects`, `assets`, `tts`, `thumbnails`, `render`, `share`, `admin`) — non-behavioural pass to keep growth sustainable.
+2. Admin Thumbnail/Render Gallery `/admin/thumbnails` (deferred from Phase 5/6).
 3. ElevenLabs TTS as premium provider (drop-in via `tts.py` VOICE_STYLE_MAP).
 4. Real-time SSE streaming for script generation.
 5. Stripe billing + cost-limit enforcement (currently cost_estimate tracked but not enforced).
-6. Admin Thumbnail Gallery `/admin/thumbnails` (deferred from Phase 5 to keep scope tight).
+6. Render polish — Ken-Burns zoom on stills, simple per-scene crossfades, captions burn-in option.
