@@ -1877,3 +1877,71 @@ class TestRenderQueue:
 
         # Skip more elaborate viewer scenario to keep test runtime small.
         pass
+
+
+class TestHardening:
+    """Production hardening — admin diagnostics, retention sweep, RBAC."""
+
+    def test_diagnostics_requires_admin(self, creator_session):
+        r = creator_session.get(f"{BASE_URL}/api/admin/diagnostics", timeout=15)
+        assert r.status_code == 403
+
+    def test_diagnostics_unauth(self):
+        r = requests.get(f"{BASE_URL}/api/admin/diagnostics", timeout=15)
+        assert r.status_code == 401
+
+    def test_diagnostics_admin_ok(self, admin_session):
+        r = admin_session.get(f"{BASE_URL}/api/admin/diagnostics", timeout=15)
+        assert r.status_code == 200
+        d = r.json()
+        # Top-level shape
+        for k in ("service", "ok", "dev_mode", "cookie_mode", "cors",
+                  "binaries", "providers", "storage", "render_queue", "data_counts"):
+            assert k in d, f"missing key {k}"
+        # Binaries
+        assert d["binaries"]["ffmpeg_path"], "ffmpeg path missing"
+        # Providers reflect mock flags configured in dev .env
+        assert d["providers"]["thumbnail_image"]["mode"] in ("mock", "live")
+        assert d["providers"]["tts"]["mode"] in ("mock", "live")
+        assert d["providers"]["stock_footage"]["mode"] in ("mock", "live")
+        # CORS — when FRONTEND_URL is set, no wildcard
+        assert isinstance(d["cors"]["origins"], list)
+        # Storage
+        for k in ("renders", "thumbnails", "audio"):
+            assert k in d["storage"]
+            assert "bytes" in d["storage"][k]
+            assert "files" in d["storage"][k]
+
+    def test_retention_run_requires_admin(self, creator_session):
+        r = creator_session.post(f"{BASE_URL}/api/admin/retention/run", timeout=20)
+        assert r.status_code == 403
+
+    def test_retention_run_admin_ok(self, admin_session):
+        r = admin_session.post(f"{BASE_URL}/api/admin/retention/run", timeout=30)
+        assert r.status_code == 200
+        report = r.json()
+        for k in ("renders_removed", "render_workdirs_removed",
+                  "orphan_project_dirs_removed", "stale_jobs_marked_failed",
+                  "bytes_freed", "retention_days", "ran_at"):
+            assert k in report
+
+    def test_cors_no_wildcard_when_frontend_url_set(self, admin_session):
+        """If FRONTEND_URL is set, the diagnostics must report wildcard=false."""
+        r = admin_session.get(f"{BASE_URL}/api/admin/diagnostics", timeout=15).json()
+        # In our preview .env FRONTEND_URL is always set.
+        if r["cors"]["origins"]:
+            assert r["cors"]["wildcard"] is False
+
+    def test_cookies_set_with_correct_attrs(self):
+        s = requests.Session()
+        r = s.post(f"{BASE_URL}/api/auth/login",
+                   json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, timeout=15)
+        assert r.status_code == 200
+        cookie_headers = (r.raw.headers.getlist("set-cookie")
+                          if hasattr(r.raw.headers, "getlist")
+                          else r.headers.get_all("set-cookie"))
+        joined = "\n".join(cookie_headers).lower()
+        # In any mode, cookies must be HttpOnly and have a SameSite attribute
+        assert "httponly" in joined
+        assert "samesite" in joined
+

@@ -2,7 +2,7 @@ import React from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, Plus, FolderKanban, Settings as SettingsIcon,
-  LogOut, Users, BarChart3, Boxes,
+  LogOut, Users, BarChart3, Boxes, ShieldCheck,
 } from "lucide-react";
 import { useAuth } from "../lib/auth";
 
@@ -27,6 +27,7 @@ export default function Sidebar() {
   const items = [...NAV_ITEMS];
   if (user && user.role === "admin") {
     items.push({ to: "/app/admin/users", icon: Users, label: "Users", testId: "nav-users" });
+    items.push({ to: "/app/admin/diagnostics", icon: ShieldCheck, label: "Diagnostics", testId: "nav-diagnostics" });
   }
 
   return (

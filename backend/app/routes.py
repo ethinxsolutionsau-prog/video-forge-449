@@ -1185,6 +1185,97 @@ async def render_cancel_job(project_id: str, job_id: str, user=Depends(get_curre
     return _ser(job)
 
 
+# ============================ ADMIN DIAGNOSTICS / RETENTION ============================
+from . import retention as retention_service
+
+
+def _provider_modes() -> dict:
+    return {
+        "llm_text": {
+            "mode": "live" if os.environ.get("EMERGENT_LLM_KEY") else "fallback",
+            "model": os.environ.get("LLM_MODEL", "gpt-5.2"),
+            "provider": os.environ.get("LLM_PROVIDER", "openai"),
+        },
+        "thumbnail_image": {
+            "mode": "mock" if thumb_images.is_mock_mode() else "live",
+            "provider": os.environ.get("THUMBNAIL_IMAGE_PROVIDER", "gemini_nano_banana"),
+            "model": os.environ.get("THUMBNAIL_IMAGE_MODEL", "gemini-3.1-flash-image-preview"),
+        },
+        "tts": {
+            "mode": "mock" if tts_service.is_mock_mode() else "live",
+            "provider": os.environ.get("TTS_PROVIDER", "openai"),
+            "model": os.environ.get("OPENAI_TTS_MODEL", "tts-1"),
+        },
+        "stock_footage": {
+            "mode": "mock" if stock_service.is_mock_mode() else "live",
+            "provider": "pexels",
+        },
+    }
+
+
+@router.get("/admin/diagnostics")
+async def admin_diagnostics(_admin=Depends(require_roles("admin"))):
+    """Single-pane production-readiness check. Admin only."""
+    from server import SYSTEM_STATUS  # cached at boot; fall back to live probe
+    sys_status = dict(SYSTEM_STATUS) if SYSTEM_STATUS else {}
+    if not sys_status:
+        from .system import ensure_ffmpeg_available
+        sys_status = ensure_ffmpeg_available()
+
+    dev_mode = os.environ.get("DEV_MODE", "false").lower() in ("1", "true", "yes")
+    frontend_url = os.environ.get("FRONTEND_URL", "")
+    cors_origins = [o.strip() for o in (frontend_url or "").split(",") if o.strip()]
+    if not cors_origins and dev_mode:
+        cors_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+    db = get_db()
+    project_count = await db.projects.count_documents({})
+    user_count = await db.users.count_documents({})
+    active_renders = await db.render_jobs.count_documents(
+        {"status": {"$in": ["queued", "validating", "preparing_assets", "rendering"]}}
+    )
+
+    return {
+        "service": "facelessforge",
+        "ok": bool(sys_status.get("ffmpeg")),
+        "dev_mode": dev_mode,
+        "cookie_mode": "lax+insecure" if dev_mode else "none+secure",
+        "cors": {
+            "origins": cors_origins,
+            "regex_fallback": dev_mode,
+            "wildcard": (not cors_origins),
+        },
+        "binaries": {
+            "ffmpeg_path": sys_status.get("ffmpeg"),
+            "ffmpeg_source": sys_status.get("ffmpeg_source"),
+            "ffprobe_path": sys_status.get("ffprobe"),
+            "ffprobe_source": sys_status.get("ffprobe_source"),
+        },
+        "providers": _provider_modes(),
+        "storage": {
+            "mode": "local_disk",
+            "limitation": "Render artifacts live on the pod's local disk; replaced on pod recreate. Use object storage for HA.",
+            **retention_service.disk_usage_report(),
+        },
+        "render_queue": {
+            "active_jobs": active_renders,
+            "concurrency": "single asyncio worker per pod",
+            "lock": "per-project asyncio Lock + DB status guard",
+            "timeout_seconds": int(os.environ.get("RENDER_TIMEOUT_SECONDS", "600")),
+        },
+        "data_counts": {
+            "users": user_count,
+            "projects": project_count,
+        },
+    }
+
+
+@router.post("/admin/retention/run")
+async def admin_retention_run(_admin=Depends(require_roles("admin"))):
+    """Manually trigger the retention sweep. Returns the cleanup report."""
+    return await retention_service.run_cleanup_once()
+
+
 # ============================ EXPORTS ============================
 
 @router.get("/projects/{project_id}/export/script.txt")

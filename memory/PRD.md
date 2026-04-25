@@ -126,6 +126,20 @@ Build a production-ready SaaS web app **FacelessForge**: a creator-first faceles
   - **108/108 backend pytest** (+12 new `TestRenderQueue`: preflight ok / blocks empty / start blocked when unmet / cross-user 403 / extra-body fields ignored / full render completes + ffprobe-validated h264 1920×1080 / concurrent render 409 / jobs list+get / 404 / ZIP render.json / share final_video / viewer 403). Frontend Playwright E2E verified end-to-end: full ~177s render flow with progress polling, completed video player + download, overview embed, public share final video, and prerequisite gating on a fresh empty project. Zero issues.
   - **Deploy hardening**: ffmpeg binary resolved at module load — prefers system `ffmpeg` (apt) and falls back to the static binary shipped by the `imageio-ffmpeg` Python package, so renders survive a fresh container without apt packages. Duration probe uses ffprobe when available and falls back to scene-duration estimation otherwise. `imageio-ffmpeg==0.6.0` pinned in `requirements.txt`.
 
+### Phase 7 — Production hardening (2026-02)
+- [x] **Boot-time ffmpeg/ffprobe install**: `app/system.py` runs in FastAPI `lifespan` and idempotently `apt-get install -y ffmpeg` if missing; cached system status exposed via diagnostics. `imageio-ffmpeg` static binary remains as a permanent pip-level fallback. Disabled via `DISABLE_APT_BOOT_INSTALL=true`.
+- [x] **Render artifact retention**: `app/retention.py` runs every 6h (configurable via `RENDER_RETENTION_INTERVAL_SECONDS`) and:
+  - removes MP4 files older than `RENDER_RETENTION_DAYS` (default 7) and marks the corresponding `render_jobs` row as `expired_artifact` with `output_url=None`
+  - purges `_work_*` dirs older than 1h (always)
+  - drops orphan project dirs in `static/{renders,thumbs,audio}/` for projects that no longer exist in DB
+  - marks "stuck" active render jobs (>1h) as failed with explanatory error
+  - never touches DB-tracked files for live projects unless past retention.
+- [x] **CORS lock-down**: production CORS is now strictly `FRONTEND_URL` only. Wildcard `*` is filtered out when `DEV_MODE=false`. Preview regex (`*.preview.emergentagent.com`) only enabled when `DEV_MODE=true`.
+- [x] **Cookie config**: production = `SameSite=None; Secure; HttpOnly`; dev = `SameSite=Lax; HttpOnly`. Already conditioned on `DEV_MODE` — verified.
+- [x] **Admin diagnostics**: `GET /api/admin/diagnostics` (admin-only) returns provider modes, ffmpeg/ffprobe paths + sources, CORS origins + wildcard flag, cookie mode, DEV_MODE, render queue concurrency/timeout, on-disk usage per category, retention policy, data counts. New `/admin/diagnostics` page in the sidebar (admin only) with green/red status banner, cleanup-sweep button, and full breakdown.
+- [x] **Manual retention trigger**: `POST /api/admin/retention/run` (admin-only) returns the cleanup report.
+- [x] **Tests**: +7 `TestHardening` (admin RBAC on diagnostics + retention, payload shape, CORS no-wildcard when FRONTEND_URL set, HttpOnly+SameSite on auth cookies). **115/115 backend tests pass** in 264s.
+
 ## Seeded Content
 - `admin@facelessforge.io` / `admin123`
 - `creator@facelessforge.io` / `creator123`

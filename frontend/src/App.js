@@ -16,6 +16,7 @@ import AnalyticsPage from "@/pages/AnalyticsPage";
 import SettingsPage from "@/pages/SettingsPage";
 import AssetLibraryPage from "@/pages/AssetLibraryPage";
 import AdminUsersPage from "@/pages/AdminUsersPage";
+import AdminDiagnosticsPage from "@/pages/AdminDiagnosticsPage";
 import PublicSharePage from "@/pages/PublicSharePage";
 import ForgotPasswordPage from "@/pages/ForgotPasswordPage";
 import ResetPasswordPage from "@/pages/ResetPasswordPage";
@@ -69,6 +70,7 @@ export default function App() {
             <Route path="/app/settings" element={<Protected><SettingsPage /></Protected>} />
             <Route path="/app/assets" element={<Protected><AssetLibraryPage /></Protected>} />
             <Route path="/app/admin/users" element={<Protected adminOnly><AdminUsersPage /></Protected>} />
+            <Route path="/app/admin/diagnostics" element={<Protected adminOnly><AdminDiagnosticsPage /></Protected>} />
 
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
