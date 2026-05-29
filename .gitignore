@@ -35,6 +35,10 @@ dist
 *token.json*
 *credentials.json*
 
+# Local secrets folder (user-managed API keys)
+/secrets/
+secrets/
+
 # Logs and debug files
 npm-debug.log*
 yarn-debug.log*
