@@ -106,3 +106,14 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+
+# Yarn lockfiles (yarn build regenerates these; not tracked in this repo)
+yarn.lock
+frontend/yarn.lock
+
+# Generated render/voiceover/thumbnail artifacts — local disk only; object
+# storage handles persistence in production. Retention sweep purges these.
+backend/static/audio/
+backend/static/renders/
+backend/static/thumbs/
