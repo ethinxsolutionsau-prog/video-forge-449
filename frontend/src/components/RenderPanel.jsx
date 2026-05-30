@@ -5,10 +5,15 @@ import { api, formatApiError, API } from "../lib/api";
 import PrereqChecklist from "./render/PrereqChecklist";
 import RenderPreviewCards from "./render/RenderPreviewCards";
 import JobStatusCard from "./render/JobStatusCard";
+import LastTerminalNotice from "./render/LastTerminalNotice";
 import JobHistory from "./render/JobHistory";
 
 const ACTIVE_STATES = new Set(["queued", "validating", "preparing_assets", "rendering"]);
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
+// Only completed jobs deserve the full status card (they show the player +
+// download). In-progress jobs also show it. Cancelled / failed get a calm
+// banner instead (see LastTerminalNotice) and live in the history list.
+const PROMOTABLE = new Set([...ACTIVE_STATES, "completed"]);
 
 export default function RenderPanel({
   projectId, project, script, scenes, metadata, assets, canEdit, onChange,
@@ -30,7 +35,10 @@ export default function RenderPanel({
       setJobs(jl.data);
       const active = jl.data.find((j) => ACTIVE_STATES.has(j.status));
       const latest = jl.data[0] || null;
-      setActiveJob(active || latest);
+      // Only show the in-detail JobStatusCard for active or completed jobs.
+      // Cancelled / failed jobs surface as a calm banner via LastTerminalNotice
+      // and remain accessible in the JobHistory list below.
+      setActiveJob(active || (latest && PROMOTABLE.has(latest.status) ? latest : null));
     } catch (err) {
       toast.error("Failed to load render data", {
         description: formatApiError(err.response?.data?.detail) || err.message,
@@ -51,9 +59,11 @@ export default function RenderPanel({
     pollRef.current = setInterval(async () => {
       try {
         const { data } = await api.get(`/projects/${projectId}/render/jobs/${activeJob.id}`);
-        setActiveJob(data);
         if (TERMINAL.has(data.status)) {
           clearInterval(pollRef.current);
+          // Only keep the active card for completed (player + download).
+          // Cancelled/failed drop out so LastTerminalNotice + history take over.
+          setActiveJob(PROMOTABLE.has(data.status) ? data : null);
           const [pf, jl, full] = await Promise.all([
             api.get(`/projects/${projectId}/render/preflight`),
             api.get(`/projects/${projectId}/render/jobs`),
@@ -69,6 +79,8 @@ export default function RenderPanel({
           } else if (data.status === "cancelled") {
             toast("Render cancelled");
           }
+        } else {
+          setActiveJob(data);
         }
       } catch {/* silent retry */}
     }, 2500);
@@ -148,6 +160,10 @@ export default function RenderPanel({
           onCancel={cancel}
           onRetry={start}
         />
+      )}
+
+      {!activeJob && jobs[0] && (jobs[0].status === "cancelled" || jobs[0].status === "failed") && (
+        <LastTerminalNotice job={jobs[0]} />
       )}
 
       {/* Action bar */}

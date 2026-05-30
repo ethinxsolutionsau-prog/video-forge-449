@@ -1,7 +1,7 @@
 import React from "react";
 
 export default function JobHistory({ jobs }) {
-  if (jobs.length <= 1) return null;
+  if (!jobs || jobs.length === 0) return null;
   return (
     <div className="border border-zinc-800 bg-[#121212] rounded-sm overflow-hidden">
       <div className="px-4 py-3 border-b border-zinc-800 font-mono text-[10px] uppercase tracking-widest text-zinc-500">

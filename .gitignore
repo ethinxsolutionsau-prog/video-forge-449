@@ -121,3 +121,4 @@ frontend/yarn.lock
 backend/static/audio/
 backend/static/renders/
 backend/static/thumbs/
+frontend/node_modules/.cache/default-development/15.pack
