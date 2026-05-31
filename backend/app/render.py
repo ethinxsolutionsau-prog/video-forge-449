@@ -378,11 +378,74 @@ async def _resolve_thumbnail(asset: dict, project: dict, work_dir: Path) -> Path
     )
 
 
+async def _video_has_motion(path: Path) -> bool:
+    """Return True iff the file is a real video with multiple frames.
+
+    Some Pexels results — and certain CDN responses — return a still image
+    encoded as a single-frame MP4, or a download_url that 200's with an
+    image/jpeg payload. Either produces a 'static slideshow' artifact when
+    looped through ffmpeg. We probe for: video stream present, duration > 1s,
+    and frame count > 1 (or frame_rate × duration > 1).
+    """
+    bin_ = _resolve_ffprobe_bin()
+    if not bin_:
+        # No ffprobe → can't verify; assume motion (legacy behaviour)
+        return True
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            bin_, "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=nb_frames,nb_read_frames,r_frame_rate,duration,codec_type",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=0", str(path),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        text = out.decode(errors="ignore")
+        # Parse simple key=value pairs
+        fields: dict[str, str] = {}
+        for line in text.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                fields[k.strip()] = v.strip()
+        if fields.get("codec_type") != "video":
+            return False
+        nb = fields.get("nb_frames", "")
+        if nb and nb != "N/A":
+            try:
+                if int(nb) <= 1:
+                    return False
+            except ValueError:
+                pass
+        # Estimate frames from rate × duration if nb_frames missing
+        rate = fields.get("r_frame_rate", "0/1")
+        try:
+            num, den = rate.split("/")
+            fps = float(num) / float(den) if float(den) else 0.0
+        except (ValueError, ZeroDivisionError):
+            fps = 0.0
+        dur_str = fields.get("duration") or ""
+        try:
+            dur = float(dur_str)
+        except ValueError:
+            dur = 0.0
+        if dur < 1.0:
+            return False
+        if fps and dur and fps * dur < 2:
+            return False
+        return True
+    except Exception:  # noqa: BLE001
+        # On any failure, do NOT block the render — assume motion
+        return True
+
+
 async def _resolve_scene_visual(scene: dict, attached_assets: list[dict],
                                  project: dict, work_dir: Path, idx: int) -> tuple[Path, str]:
     """Return (local_path, kind) where kind is 'image' or 'video'.
-    Always succeeds — falls back to caption frame on any error."""
-    # Prefer first attached stock asset
+    Always succeeds — falls back to caption frame on any error.
+
+    For ``stock_video`` candidates, downloads are probed with ffprobe; any
+    single-frame / sub-1s clip is rejected and the next candidate is tried.
+    """
     candidates = [a for a in attached_assets if a.get("scene_id") == scene.get("id")
                   and a.get("asset_type") in ("stock_image", "stock_video")]
     out_dir = work_dir / "scenes"
@@ -397,7 +460,10 @@ async def _resolve_scene_visual(scene: dict, attached_assets: list[dict],
         if local and ext in (".png", ".jpg", ".jpeg"):
             return (local, "image")
         if local and ext in (".mp4", ".mov", ".webm"):
-            return (local, "video")
+            if await _video_has_motion(local):
+                return (local, "video")
+            logger.warning("scene %d local video %s is static — rejecting", idx, local)
+            continue
         if not url:
             continue
         is_video = a.get("asset_type") == "stock_video" or any(url.lower().endswith(ext)
@@ -405,8 +471,17 @@ async def _resolve_scene_visual(scene: dict, attached_assets: list[dict],
         suffix = ".mp4" if is_video else ".jpg"
         target = out_dir / f"scene_{idx:03d}_src{suffix}"
         ok = await _download_to(url, target, max_bytes=MAX_VIDEO_DOWNLOAD_BYTES)
-        if ok:
-            return (target, "video" if is_video else "image")
+        if not ok:
+            continue
+        if is_video and not await _video_has_motion(target):
+            logger.warning("scene %d video %s is static — rejecting and trying next candidate",
+                           idx, a.get("external_id"))
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
+            continue
+        return (target, "video" if is_video else "image")
 
     # Fallback caption
     caption = scene.get("caption_text") or scene.get("narration_text") or scene.get("visual_direction") or ""

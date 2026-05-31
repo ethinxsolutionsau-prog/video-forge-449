@@ -166,7 +166,11 @@ async def _search_pexels(query: str, media_type: MediaType, per_page: int) -> li
             for p in (data.get("photos") or []):
                 out.append(_normalise_pexels_photo(p, query))
         if media_type in ("both", "videos"):
-            r = await client.get(f"{base}/videos/search", params={"query": query, "per_page": per_page})
+            video_params = {"query": query, "per_page": per_page}
+            min_dur = int(os.environ.get("PEXELS_MIN_VIDEO_DURATION", "10"))
+            if min_dur > 0:
+                video_params["min_duration"] = min_dur
+            r = await client.get(f"{base}/videos/search", params=video_params)
             if r.status_code == 429:
                 raise RuntimeError("pexels_rate_limited")
             r.raise_for_status()

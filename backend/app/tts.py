@@ -32,7 +32,7 @@ STATIC_ROOT.mkdir(parents=True, exist_ok=True)
 
 # Voice style → per-provider voice. Keys are stable contract for the frontend.
 VOICE_STYLE_MAP = {
-    "narrator":     {"openai_voice": "onyx",    "eleven_env": "ELEVENLABS_VOICE_NARRATOR",    "eleven_default": "pNInz6obpgDQGcFmaJgB"},
+    "narrator":     {"openai_voice": "onyx",    "eleven_env": "ELEVENLABS_VOICE_NARRATOR",    "eleven_default": "f1cjR1nonQ70hmW0yRhF"},
     "energetic":    {"openai_voice": "nova",    "eleven_env": "ELEVENLABS_VOICE_ENERGETIC",   "eleven_default": "MF3mGyEYCl7XYWbV9V6O"},
     "documentary":  {"openai_voice": "sage",    "eleven_env": "ELEVENLABS_VOICE_DOCUMENTARY", "eleven_default": "ErXwobaYiN019PkySvjV"},
     "calm":         {"openai_voice": "alloy",   "eleven_env": "ELEVENLABS_VOICE_CALM",        "eleven_default": "EXAVITQu4vr4xnSDxMaL"},
