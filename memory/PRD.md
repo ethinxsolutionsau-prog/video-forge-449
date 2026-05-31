@@ -30,6 +30,19 @@ Build a production-ready SaaS web app **FacelessForge**: a creator-first faceles
 - **Editor** — can modify scripts/scenes/metadata but not billing/admin.
 - **Viewer** — read-only access to completed projects.
 
+## Render Quality Upgrade (2026-05-31) ✅
+- **Real Pexels stock video**: `USE_MOCK_PEXELS=false` + Pexels API key wired via `/app/secrets/pexels.env`. Auto-attach now pulls real MP4 clips per scene.
+- **Subtitle burn-in**: new `app/subtitles.py` generates a standards-compliant SRT from each scene's `caption_text` + timings (offset by intro duration). `render.py` runs `subtitles=...:force_style=...` filter as a new "burning_subtitles" pipeline step. Disable via `RENDER_BURN_SUBTITLES=false`.
+- **Background music bed**: 60s royalty-free synthesized ambient pad at `static/music/default_bed.mp3` (sine-based chord, tremolo, light reverb, loudnorm'd to mean -18 dB). New mux branch uses `amix` to layer voiceover (0 dB) over music (-18 dB, infinite loop). When voiceover is mock/silent, music plays as primary audio. Disable via `RENDER_MUSIC_BED=false`, override path via `RENDER_MUSIC_BED_PATH`, change gain via `RENDER_MUSIC_GAIN_DB`.
+- **Bug fix**: `_ffmpeg_normalise_video` was missing `color=black:` separator before `setsar=1`, causing real Pexels videos to fail with `'setsar' not found` (mock images never hit this path so it was latent for months).
+- **`_resolve_audio`**: now skips mock/silent voiceover assets so the music bed can take over in the mux step instead of music being mixed under literal silence.
+
+## Storage Migration to Cloudflare R2 (2026-05-31) ✅
+- `STORAGE_MODE=object` via `/app/secrets/storage.env`. Bucket `facelessforge-prod` on R2 endpoint.
+- Custom domain `https://videos.ethinx.solutions` bound — no signed URLs, no expiry.
+- Existing local files (~67 MB) not migrated; pending one-time sync script if needed.
+
+
 ## ElevenLabs TTS Integration (2026-02-29) ✅
 - Added **ElevenLabs** as the primary TTS provider (was OpenAI/mock).
 - New provider chain: **ElevenLabs → OpenAI TTS → Mock WAV** (auto-fallback on failure).

@@ -33,11 +33,15 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .db import get_db
 from .storage import get_storage
+from .subtitles import write_srt
 
 logger = logging.getLogger("facelessforge.render")
 
 STATIC_RENDERS = Path(__file__).parent.parent / "static" / "renders"
 STATIC_RENDERS.mkdir(parents=True, exist_ok=True)
+
+STATIC_MUSIC_DIR = Path(__file__).parent.parent / "static" / "music"
+DEFAULT_MUSIC_BED = STATIC_MUSIC_DIR / "default_bed.mp3"
 
 
 def _resolve_ffmpeg_bin() -> str:
@@ -58,6 +62,22 @@ def _resolve_ffprobe_bin() -> Optional[str]:
     """ffprobe is optional (only used for duration probe). System apt ships it;
     imageio-ffmpeg does not. If absent, we silently skip the probe step."""
     return shutil.which("ffprobe")
+
+
+def _resolve_music_bed() -> Optional[Path]:
+    """Return a local music bed file path, or None if disabled / missing.
+
+    Resolution order:
+      1. RENDER_MUSIC_BED_PATH env override (absolute path)
+      2. Bundled default at static/music/default_bed.mp3
+    """
+    override = os.environ.get("RENDER_MUSIC_BED_PATH", "").strip()
+    if override:
+        p = Path(override)
+        return p if p.exists() and p.is_file() else None
+    if DEFAULT_MUSIC_BED.exists() and DEFAULT_MUSIC_BED.is_file():
+        return DEFAULT_MUSIC_BED
+    return None
 
 
 FFMPEG_BIN = _resolve_ffmpeg_bin()
@@ -324,12 +344,19 @@ async def _resolve_scene_visual(scene: dict, attached_assets: list[dict],
 
 async def _resolve_audio(project: dict, scenes: list[dict], assets: list[dict],
                          work_dir: Path) -> Optional[Path]:
-    """Return local audio path or None."""
+    """Return local audio path or None.
+
+    Skips mock (silent) voiceover assets — callers fall through to the
+    music-bed-only mux branch so the final MP4 actually has audible audio.
+    """
+    def _is_real(a: dict) -> bool:
+        return bool(a) and not a.get("mock") and a.get("source") != "mock_tts"
+
     # Prefer the full-script selected
     full = next((a for a in assets if a.get("asset_type") == "voiceover_audio"
                  and not a.get("scene_id")
                  and a.get("id") == project.get("selected_voiceover_asset_id")), None)
-    if full:
+    if _is_real(full):
         local = _local_path_for_asset(full)
         if local:
             return local
@@ -338,7 +365,8 @@ async def _resolve_audio(project: dict, scenes: list[dict], assets: list[dict],
     scene_voices_by_id: dict[str, dict] = {}
     for s in scenes:
         ss = [a for a in assets if a.get("asset_type") == "voiceover_audio"
-              and a.get("scene_id") == s.get("id") and a.get("status") != "rejected"]
+              and a.get("scene_id") == s.get("id") and a.get("status") != "rejected"
+              and _is_real(a)]
         if not ss:
             continue
         sel = next((x for x in ss if x.get("status") == "selected"), None) or max(
@@ -411,7 +439,7 @@ def _ffmpeg_normalise_video(src: Path, duration: float, out: Path) -> list[str]:
         "-t", f"{duration:.2f}",
         "-vf", (
             f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,"
-            f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:setsar=1,format=yuv420p,fps={FPS}"
+            f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p,fps={FPS}"
         ),
         "-r", str(FPS),
         "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
@@ -579,15 +607,70 @@ async def _run_render(job_id: str, project_id: str):
         if not ok:
             raise RuntimeError(f"concat failed: {err[-300:]}")
 
-        # Mux audio
+        # ---- subtitle burn-in (hard subs from scene captions) ----
+        burned_out = silent_out  # fallback if subs disabled/empty
+        burn_enabled = os.environ.get("RENDER_BURN_SUBTITLES", "true").lower() in ("1", "true", "yes")
+        if burn_enabled and scenes:
+            await _set_job(job_id, current_step="burning_subtitles", progress=90)
+            srt_path = work_dir / "captions.srt"
+            try:
+                write_srt(scenes, srt_path, intro_offset_seconds=INTRO_DURATION_SECONDS)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("SRT generation failed (%s) — skipping burn-in", e)
+                srt_path = None
+            if srt_path and srt_path.exists() and srt_path.stat().st_size > 0:
+                burned_out = work_dir / "video_subbed.mp4"
+                # Path needs ffmpeg-style escaping for the subtitles filter.
+                srt_escaped = srt_path.as_posix().replace(":", r"\:").replace("'", r"\'")
+                sub_style = (
+                    "FontName=DejaVu Sans,FontSize=22,PrimaryColour=&H00FFFFFF&,"
+                    "OutlineColour=&H66000000&,BackColour=&H99000000&,BorderStyle=3,"
+                    "Outline=1,Shadow=0,Alignment=2,MarginV=60"
+                )
+                cmd = [
+                    FFMPEG_BIN, "-y", "-i", str(silent_out),
+                    "-vf", f"subtitles='{srt_escaped}':force_style='{sub_style}'",
+                    "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                    "-an", str(burned_out),
+                ]
+                ok, err = await _run_ffmpeg(cmd)
+                if not ok:
+                    logger.warning("subtitle burn-in failed (%s) — using clean video", err[-300:])
+                    burned_out = silent_out
+
+        # Mux audio (voiceover + optional music bed at -18dB)
         await _set_job(job_id, current_step="muxing_audio", progress=94)
         out_dir = STATIC_RENDERS / project_id
         out_dir.mkdir(parents=True, exist_ok=True)
         final = out_dir / f"{job_id}.mp4"
-        if audio_path and audio_path.exists():
+
+        music_path = _resolve_music_bed()
+        music_db = float(os.environ.get("RENDER_MUSIC_GAIN_DB", "-18"))
+        use_music = bool(music_path and music_path.exists()
+                         and os.environ.get("RENDER_MUSIC_BED", "true").lower() in ("1", "true", "yes"))
+
+        if audio_path and audio_path.exists() and use_music:
+            # voiceover (loud) + music bed (quiet, looped) → amix → AAC
             cmd = [
                 FFMPEG_BIN, "-y",
-                "-i", str(silent_out),
+                "-i", str(burned_out),
+                "-i", str(audio_path),
+                "-stream_loop", "-1", "-i", str(music_path),
+                "-filter_complex",
+                f"[2:a]volume={music_db}dB[bed];"
+                f"[1:a]volume=0dB[vo];"
+                f"[vo][bed]amix=inputs=2:duration=first:dropout_transition=0[aout]",
+                "-map", "0:v", "-map", "[aout]",
+                "-c:v", "copy",
+                "-c:a", "aac", "-b:a", "192k",
+                "-shortest",
+                "-movflags", "+faststart",
+                str(final),
+            ]
+        elif audio_path and audio_path.exists():
+            cmd = [
+                FFMPEG_BIN, "-y",
+                "-i", str(burned_out),
                 "-i", str(audio_path),
                 "-map", "0:v", "-map", "1:a",
                 "-c:v", "copy",
@@ -596,11 +679,24 @@ async def _run_render(job_id: str, project_id: str):
                 "-movflags", "+faststart",
                 str(final),
             ]
-        else:
-            # Add silent AAC audio so the MP4 still has an audio stream
+        elif use_music:
+            # No voiceover — music bed plays at 0 dB (it's the only audio)
             cmd = [
                 FFMPEG_BIN, "-y",
-                "-i", str(silent_out),
+                "-i", str(burned_out),
+                "-stream_loop", "-1", "-i", str(music_path),
+                "-map", "0:v", "-map", "1:a",
+                "-c:v", "copy",
+                "-c:a", "aac", "-b:a", "192k",
+                "-shortest",
+                "-movflags", "+faststart",
+                str(final),
+            ]
+        else:
+            # Last-resort silent AAC so the MP4 still has an audio stream
+            cmd = [
+                FFMPEG_BIN, "-y",
+                "-i", str(burned_out),
                 "-f", "lavfi", "-i", "anullsrc=cl=stereo:r=48000",
                 "-map", "0:v", "-map", "1:a",
                 "-c:v", "copy",
