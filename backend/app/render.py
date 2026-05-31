@@ -456,15 +456,22 @@ async def _resolve_scene_visual(scene: dict, attached_assets: list[dict],
         url = a.get("download_url") or a.get("preview_url") or a.get("source_url")
         local = _local_path_for_asset(a)
         ext = (Path(local).suffix.lower() if local else "")
+        ext_id = a.get("external_id") or a.get("id", "")[:8]
         # Try local first
         if local and ext in (".png", ".jpg", ".jpeg"):
+            logger.info("scene=%02d FOOTAGE_SELECT type=local_image ext_id=%s path=%s",
+                        idx + 1, ext_id, local)
             return (local, "image")
         if local and ext in (".mp4", ".mov", ".webm"):
             if await _video_has_motion(local):
+                logger.info("scene=%02d FOOTAGE_SELECT type=local_video ext_id=%s path=%s",
+                            idx + 1, ext_id, local)
                 return (local, "video")
-            logger.warning("scene %d local video %s is static — rejecting", idx, local)
+            logger.warning("scene=%02d FOOTAGE_REJECT reason=local_static_video ext_id=%s path=%s",
+                           idx + 1, ext_id, local)
             continue
         if not url:
+            logger.warning("scene=%02d FOOTAGE_SKIP reason=no_url ext_id=%s", idx + 1, ext_id)
             continue
         is_video = a.get("asset_type") == "stock_video" or any(url.lower().endswith(ext)
             for ext in (".mp4", ".mov", ".webm"))
@@ -472,18 +479,31 @@ async def _resolve_scene_visual(scene: dict, attached_assets: list[dict],
         target = out_dir / f"scene_{idx:03d}_src{suffix}"
         ok = await _download_to(url, target, max_bytes=MAX_VIDEO_DOWNLOAD_BYTES)
         if not ok:
+            logger.warning("scene=%02d FOOTAGE_REJECT reason=download_failed ext_id=%s url=%s",
+                           idx + 1, ext_id, url[:100])
             continue
-        if is_video and not await _video_has_motion(target):
-            logger.warning("scene %d video %s is static — rejecting and trying next candidate",
-                           idx, a.get("external_id"))
-            try:
-                target.unlink(missing_ok=True)
-            except OSError:
-                pass
-            continue
-        return (target, "video" if is_video else "image")
+        size = target.stat().st_size if target.exists() else 0
+        if is_video:
+            motion = await _video_has_motion(target)
+            probe = await _probe_duration_seconds(target)
+            if not motion:
+                logger.warning("scene=%02d FOOTAGE_REJECT reason=no_motion ext_id=%s size=%d duration=%ss url=%s",
+                               idx + 1, ext_id, size, probe, url[:100])
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
+            logger.info("scene=%02d FOOTAGE_SELECT type=pexels_video ext_id=%s size=%d duration=%ss url=%s",
+                        idx + 1, ext_id, size, probe, url[:100])
+            return (target, "video")
+        logger.info("scene=%02d FOOTAGE_SELECT type=pexels_image ext_id=%s size=%d url=%s",
+                    idx + 1, ext_id, size, url[:100])
+        return (target, "image")
 
     # Fallback caption
+    logger.warning("scene=%02d FOOTAGE_FALLBACK reason=all_candidates_rejected candidates=%d",
+                   idx + 1, len(candidates))
     caption = scene.get("caption_text") or scene.get("narration_text") or scene.get("visual_direction") or ""
     title = f"Scene {scene.get('scene_number', idx + 1):02d}"
     _pil_caption_frame(

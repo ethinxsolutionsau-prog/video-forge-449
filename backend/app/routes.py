@@ -753,7 +753,7 @@ async def auto_attach_assets(project_id: str, body: AutoAttachRequest, user=Depe
                 await db.assets.insert_one(doc)
                 attached += 1
                 details.append({"scene_id": scene_id, "scene_number": scene["scene_number"], "status": "attached", "asset_id": doc["id"]})
-            except Exception as insert_err:  # DuplicateKeyError from compound unique index
+            except Exception:  # DuplicateKeyError from compound unique index
                 # Treat as skipped — another actor already attached the same item
                 skipped += 1
                 details.append({"scene_id": scene_id, "scene_number": scene["scene_number"], "status": "skipped", "reason": "duplicate"})
