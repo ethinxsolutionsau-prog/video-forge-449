@@ -1053,3 +1053,75 @@ async def _run_render(job_id: str, project_id: str):
                 "updated_at": _now(),
             }},
         )
+
+        # ---- Make.com / outbound webhook (best-effort, never fails the job) ----
+        try:
+            from .webhooks import deliver_render_webhook
+            # Grab the asset row to pull the actual voice_id used
+            vo_id = None
+            sel_vo = (project or {}).get("selected_voiceover_asset_id")
+            if sel_vo:
+                vo_asset = await db.assets.find_one({"id": sel_vo}, {"_id": 0})
+                if vo_asset:
+                    style_map = {
+                        "narrator": "ELEVENLABS_VOICE_NARRATOR",
+                        "energetic": "ELEVENLABS_VOICE_ENERGETIC",
+                        "documentary": "ELEVENLABS_VOICE_DOCUMENTARY",
+                        "calm": "ELEVENLABS_VOICE_CALM",
+                        "dramatic": "ELEVENLABS_VOICE_DRAMATIC",
+                        "corporate": "ELEVENLABS_VOICE_CORPORATE",
+                        "mysterious": "ELEVENLABS_VOICE_MYSTERIOUS",
+                    }
+                    style = vo_asset.get("voice_style") or "narrator"
+                    vo_id = os.environ.get(style_map.get(style, "ELEVENLABS_VOICE_NARRATOR"), "")
+            # Naive credit estimate (placeholder until full pricing model lands)
+            credit_cost = max(1, int(round((duration or 0) / 6))) if duration else 0
+            # Caption: gathered from scenes' narration text. Falls back to topic.
+            caption_parts = [s.get("caption_text") or s.get("narration_text") or ""
+                             for s in (scenes or [])]
+            caption = " ".join(p.strip() for p in caption_parts if p).strip()
+            if not caption:
+                caption = (project or {}).get("topic", "")
+            caption = (caption[:280] + " #automation #viral").strip()
+            webhook_result = await deliver_render_webhook(
+                job_id=job_id,
+                output_url=saved.url,
+                title=(project or {}).get("title") or (project or {}).get("name") or "",
+                topic=(project or {}).get("topic") or "",
+                duration_seconds=int(duration or 0),
+                voice_id=vo_id or "",
+                credit_cost=credit_cost,
+                caption=caption,
+                project_type=(project or {}).get("queue_type") or "",
+                brand=(project or {}).get("queue_brand") or "",
+            )
+            await db.render_jobs.update_one(
+                {"id": job_id},
+                {"$set": {
+                    "webhook_url_present": webhook_result["webhook_url_present"],
+                    "webhook_delivered": webhook_result["delivered"],
+                    "webhook_output_verified": webhook_result["output_verified"],
+                    "webhook_attempts": webhook_result["attempts"],
+                    "webhook_payload": webhook_result["payload"],
+                }},
+            )
+            # If this render came from the queue, mirror its completion state
+            if (project or {}).get("queue_source") == "google_sheets":
+                final_queue_status = "completed" if webhook_result["delivered"] else "failed"
+                queue_patch = {
+                    "queue_status": final_queue_status,
+                    "queue_completed_at": _now(),
+                }
+                if not webhook_result["delivered"]:
+                    queue_patch["queue_error"] = "webhook_delivery_failed"
+                await db.projects.update_one({"id": project_id}, {"$set": queue_patch})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("webhook block failed (job continues): %s", e)
+            if (project or {}).get("queue_source") == "google_sheets":
+                await db.projects.update_one(
+                    {"id": project_id},
+                    {"$set": {"queue_status": "failed",
+                              "queue_error": "webhook_exception",
+                              "queue_error_detail": str(e)[:300],
+                              "queue_completed_at": _now()}},
+                )

@@ -29,6 +29,8 @@ from .scoring import quality_score, quality_label, compute_project_status, scene
 from . import generation as gen
 from . import stock as stock_service
 from . import thumbnail_images as thumb_images
+from . import queue_source
+from . import queue_worker
 
 
 router = APIRouter(prefix="/api")
@@ -1672,3 +1674,109 @@ async def public_share(token: str):
         "shared_at": project.get("updated_at").isoformat()
             if isinstance(project.get("updated_at"), datetime) else project.get("updated_at"),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Google Sheets Queue
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/queue/next")
+async def queue_next(user=Depends(require_roles("admin", "creator"))):
+    """Peek at the next pending row from the configured Google Sheet CSV.
+
+    Read-only — does not mutate the sheet or create any project.
+    Returns ``{job: null}`` when the queue is empty or unconfigured.
+    """
+    job = await queue_source.fetch_next_pending()
+    return {"job": job, "configured": bool(os.environ.get("GOOGLE_SHEET_CSV_URL", "").strip())}
+
+
+@router.post("/queue/auto-process")
+async def queue_auto_process(
+    request: Request,
+    user=Depends(require_roles("admin", "creator")),
+):
+    """Pop the next pending row, create a project, and run the full chain.
+
+    The generation pipeline (script → scenes → assets → thumbnail → voiceover
+    → render) runs in the background — this endpoint returns as soon as the
+    project row is created so the queue stays responsive.
+    """
+    db = get_db()
+    job = await queue_source.fetch_next_pending()
+    if not job:
+        return {"status": "empty",
+                "configured": bool(os.environ.get("GOOGLE_SHEET_CSV_URL", "").strip())}
+
+    # Idempotency: refuse to re-create a project for the same queue_id
+    existing = await db.projects.find_one(
+        {"queue_source": "google_sheets", "queue_id": job["queue_id"]},
+        {"_id": 0, "id": 1, "queue_status": 1},
+    )
+    if existing:
+        return {"status": "duplicate",
+                "project_id": existing["id"],
+                "queue_status": existing.get("queue_status")}
+
+    now = datetime.now(timezone.utc)
+    project_id = str(uuid.uuid4())
+    name = (f"[{job['queue_brand']}] {job['topic'][:60]}".strip()
+            if job.get("queue_brand") else (job["topic"][:80] or f"Queue {job['queue_id']}"))
+    project = {
+        "id": project_id,
+        "user_id": user["id"],
+        "name": name,
+        "topic": job["topic"],
+        "niche": job.get("niche") or "queue",
+        "voice_style": job.get("voice_style") or "narrator",
+        "tone": job.get("tone") or "educational",
+        "audience": job.get("audience") or "general",
+        "platform": job.get("platform") or "youtube",
+        "target_duration": job.get("target_duration") or 60,
+        "status": "DRAFT",
+        # Queue metadata
+        "queue_source": "google_sheets",
+        "queue_id": job["queue_id"],
+        "queue_type": job["queue_type"],
+        "queue_brand": job["queue_brand"],
+        "queue_topic_raw": job["topic"],
+        "queue_status": "pending",
+        "queue_raw_row": job["raw"],
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.projects.insert_one(project)
+    project.pop("_id", None)  # Mongo mutates the dict
+
+    # Background task — do not block the HTTP response on a multi-minute pipeline.
+    import asyncio
+    asyncio.create_task(queue_worker.run_pipeline(project_id, requested_by=user["id"]))
+
+    return {
+        "status": "processing",
+        "project_id": project_id,
+        "queue_id": job["queue_id"],
+        "name": name,
+        "job": {k: v for k, v in job.items() if k != "raw"},
+    }
+
+
+@router.get("/queue/status/{project_id}")
+async def queue_status(
+    project_id: str,
+    user=Depends(require_roles("admin", "creator")),
+):
+    """Inspect the queue state of a project (intended for polling)."""
+    db = get_db()
+    p = await db.projects.find_one(
+        {"id": project_id},
+        {"_id": 0, "id": 1, "name": 1,
+         "queue_source": 1, "queue_id": 1, "queue_type": 1, "queue_brand": 1,
+         "queue_status": 1, "queue_error": 1, "queue_error_detail": 1,
+         "queue_failed_step": 1, "queue_started_at": 1, "queue_completed_at": 1,
+         "queue_render_job_id": 1, "status": 1},
+    )
+    if not p:
+        raise HTTPException(404, "project not found")
+    return p
+
