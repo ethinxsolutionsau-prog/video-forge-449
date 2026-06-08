@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ETHINX Canonical Architecture v1 • Technical Specification</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+:root {
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+}
+html { font-family: var(--font-sans); }
+.font-mono { font-family: var(--font-mono); }
+.prose-tight { max-width: 96ch; }
+::-webkit-scrollbar { width: 10px; height:10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+.dark ::-webkit-scrollbar-thumb { background: #52525b; }
+code, pre { font-family: var(--font-mono); }
+.mermaid { background: transparent !important; }
+.callout { @apply border-l-4 pl-4 py-3 rounded-r-xl; }
+@media print {
+  aside { display:none !important; }
+  main { padding:0 !important; }
+  body { background:white !important; }
+}
+</style>
+<script>
+tailwind.config = { darkMode: 'class' }
+</script>
+</head>
+<body class="bg-[#fafafb] dark:bg-[#0a0a0f] text-zinc-800 dark:text-zinc-200 antialiased">
+<script>
+if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+  document.documentElement.classList.add('dark')
+}
+</script>
+
+<div class="flex min-h-screen">
+  <!-- Sidebar -->
+  <aside id="sidebar" class="fixed lg:sticky top-0 left-0 z-40 w-[300px] h-screen overflow-y-auto bg-white/80 dark:bg-zinc-950/80 backdrop-blur-xl border-r border-zinc-200 dark:border-zinc-800 transition-transform -translate-x-full lg:translate-x-0">
+    <div class="p-6 border-b border-zinc-200 dark:border-zinc-800">
+      <div class="flex items-center gap-3">
+        <div class="h-10 w-10 rounded-2xl bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-violet-600/20">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" class="text-white"><path d="M12 2L20 7v10l-8 5-8-5V7l8-5Z" stroke="currentColor" stroke-width="1.5"/><path d="M12 2v20" stroke="currentColor" stroke-width="1.5"/></svg>
+        </div>
+        <div>
+          <p class="font-bold tracking-tight text-zinc-900 dark:text-white leading-none">ETHINX</p>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400">Canonical Architecture</p>
+        </div>
+      </div>
+      <div class="mt-4 flex items-center gap-2 text-[11px]">
+        <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300 font-medium">v1.0 Canonical</span>
+        <span class="px-2 py-0.5 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300">2026-06-08</span>
+      </div>
+    </div>
+
+    <nav class="p-3">
+      <div class="px-3 pb-2">
+        <input id="navSearch" placeholder="Filter sections..." class="w-full text-sm px-3 py-2 rounded-xl bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 focus:outline-none focus:ring-2 focus:ring-violet-500" />
+      </div>
+      <ul id="navList" class="space-y-0.5 text-sm">
+        <!-- Filled by JS -->
+      </ul>
+    </nav>
+
+    <div class="sticky bottom-0 p-4 border-t border-zinc-200 dark:border-zinc-800 bg-white/80 dark:bg-zinc-950/80 backdrop-blur">
+      <button id="themeToggle" class="w-full flex items-center justify-center gap-2 text-xs px-3 py-2 rounded-xl bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-medium hover:opacity-90 transition">
+        <span>Toggle Theme</span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="flex-1 min-w-0">
+    <!-- Top Bar -->
+    <header class="sticky top-0 z-30 backdrop-blur-xl bg-white/70 dark:bg-zinc-950/70 border-b border-zinc-200 dark:border-zinc-800">
+      <div class="max-w-[1200px] mx-auto px-6 lg:px-12 py-4 flex items-center gap-4">
+        <button id="menuBtn" class="lg:hidden p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-900">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <div class="flex-1 min-w-0">
+          <h1 class="text-[28px] lg:text-[36px] font-extrabold tracking-tight text-zinc-900 dark:text-white">ETHINX Canonical Architecture v1</h1>
+          <p class="text-sm text-zinc-600 dark:text-zinc-400 mt-0.5">Multi-tenant automation operating system for service businesses • Source of Truth</p>
+        </div>
+        <div class="hidden md:flex items-center gap-2">
+          <span class="text-xs px-2.5 py-1 rounded-full bg-violet-600 text-white font-semibold">DODO PAYMENTS</span>
+          <span class="text-xs px-2.5 py-1 rounded-full border border-zinc-300 dark:border-zinc-700">SUPABASE</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="max-w-[1200px] mx-auto px-6 lg:px-12 py-10 prose-tight">
+      <!-- Document Meta -->
+      <div class="grid md:grid-cols-4 gap-4 mb-12">
+        <div class="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950">
+          <p class="text-[11px] uppercase tracking-wide text-zinc-500">Version</p>
+          <p class="font-semibold">v1.0</p>
+        </div>
+        <div class="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950">
+          <p class="text-[11px] uppercase tracking-wide text-zinc-500">Date</p>
+          <p class="font-semibold">2026-06-08</p>
+        </div>
+        <div class="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950">
+          <p class="text-[11px] uppercase tracking-wide text-zinc-500">Status</p>
+          <p class="font-semibold text-emerald-600 dark:text-emerald-400">Canonical Source of Truth</p>
+        </div>
+        <div class="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950">
+          <p class="text-[11px] uppercase tracking-wide text-zinc-500">Owner</p>
+          <p class="font-semibold">Platform Architecture</p>
+        </div>
+      </div>
+
+      <!-- 1. Vision -->
+      <section id="vision" class="scroll-mt-24 mb-16">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">1. Vision & Product Boundaries</h2>
+        
+        <div class="callout border-violet-500 bg-violet-50 dark:bg-violet-950/30 mb-6">
+          <p class="font-semibold text-violet-900 dark:text-violet-200">What ETHINX IS</p>
+          <p class="text-sm text-violet-900/80 dark:text-violet-200/80 mt-1">A multi-tenant automation operating system for service businesses. Provides lead capture, enrichment, routing, workflow execution, and template-based verticalization—all on a single codebase with strict tenant isolation.</p>
+        </div>
+
+        <div class="grid md:grid-cols-3 gap-4 mb-8">
+          <div class="rounded-2xl p-5 border border-rose-200 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/30">
+            <p class="font-semibold text-rose-900 dark:text-rose-200">Not a CRM</p>
+            <p class="text-sm mt-1 text-rose-900/80 dark:text-rose-200/80">No contact timeline builder, deal pipelines, or sales forecasting. Integrates with CRMs.</p>
+          </div>
+          <div class="rounded-2xl p-5 border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/30">
+            <p class="font-semibold text-amber-900 dark:text-amber-200">Not a Workflow Builder</p>
+            <p class="text-sm mt-1 text-amber-900/80 dark:text-amber-200/80">No drag-and-drop DAG editor in v1. Workflows are template-defined, config-driven.</p>
+          </div>
+          <div class="rounded-2xl p-5 border border-sky-200 dark:border-sky-900 bg-sky-50 dark:bg-sky-950/30">
+            <p class="font-semibold text-sky-900 dark:text-sky-200">Not an Agency</p>
+            <p class="text-sm mt-1 text-sky-900/80 dark:text-sky-200/80">Product-first. Templates are deployable artifacts, not services.</p>
+          </div>
+        </div>
+
+        <h3 class="font-semibold text-lg mb-2">Core Thesis</h3>
+        <p class="text-zinc-700 dark:text-zinc-300 leading-relaxed">One platform → many service industries → many templates → one codebase. Tenants get vertical-specific automation in minutes via template installation, without code forks or separate deployments.</p>
+
+        <h3 class="font-semibold text-lg mt-8 mb-2">Product Boundaries v1</h3>
+        <ul class="list-disc pl-6 space-y-1 text-zinc-700 dark:text-zinc-300">
+          <li>Lead Engine: capture, normalize, dedupe, score, assign</li>
+          <li>Workflow Engine: trigger → action, synchronous + queued execution</li>
+          <li>Template System: versioned bundles of workflows, forms, copy, UI config</li>
+          <li>Multi-tenancy with RLS: absolute data isolation</li>
+          <li>Billing via Dodo Payments only</li>
+          <li>Admin, tenant management, audit logs</li>
+        </ul>
+      </section>
+
+      <!-- 2. System Overview -->
+      <section id="system-overview" class="scroll-mt-24 mb-16">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">2. System Overview & Service Map</h2>
+        <div class="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-6">
+          <div class="mermaid">
+flowchart TB
+  U[User Browser] --> FE[Next.js 14 App Router<br/>Vercel]
+  FE --> SB[Supabase<br/>Postgres + Auth + RLS + Storage]
+  FE --> EF[Supabase Edge Functions]
+  EF --> WF[Workflow Engine]
+  EF --> DODO[Dodo Payments API]
+  EF --> LEAD[Lead Engine]
+  WF --> SB
+  LEAD --> SB
+  DODO --> WH[Webhook Handler]
+  WH --> SB
+  SB --> RLS[(Row Level Security)]
+  FE --> TMPL[Template System]
+  TMPL --> SB
+          </div>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-6 mt-6">
+          <div class="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-5 bg-white dark:bg-zinc-950">
+            <h4 class="font-semibold mb-2">Components</h4>
+            <ul class="text-sm space-y-1.5 text-zinc-700 dark:text-zinc-300">
+              <li><b>Next.js Frontend</b> – App Router, Server Actions, RSC</li>
+              <li><b>Supabase</b> – Postgres, Auth, RLS, Storage, Realtime, Edge Functions</li>
+              <li><b>Dodo Payments</b> – Checkout, subscriptions, webhooks, customer portal</li>
+              <li><b>Workflow Engine</b> – Trigger→Action runner with retry</li>
+              <li><b>Template System</b> – Installable vertical packs</li>
+            </ul>
+          </div>
+          <div class="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-5 bg-white dark:bg-zinc-950">
+            <h4 class="font-semibold mb-2">Data Flow</h4>
+            <ol class="text-sm space-y-1.5 list-decimal pl-5 text-zinc-700 dark:text-zinc-300">
+              <li>User authenticates via Supabase Auth → tenant context set</li>
+              <li>Lead enters via form/API → Edge Function normalizes → RLS inserts</li>
+              <li>Workflow triggers on lead.created → actions execute</li>
+              <li>Checkout via Dodo → webhook provisions subscription → RLS grants features</li>
+              <li>Template install copies config + workflows into tenant scope</li>
+            </ol>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. Multi-Tenancy -->
+      <section id="multi-tenancy" class="scroll-mt-24 mb-16">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">3. Multi-Tenancy Model</h2>
+        <div class="rounded-2xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 p-5 mb-6">
+          <p class="font-semibold text-amber-900 dark:text-amber-200">Tenant Isolation Strategy</p>
+          <p class="text-sm mt-1 text-amber-900/90 dark:text-amber-200/90">Shared database, shared schema, row-level isolation via <code class="font-mono">tenant_id</code> on every tenant-scoped table. Enforced by Postgres RLS. No cross-tenant queries possible from application role.</p>
+        </div>
+        <h3 class="font-semibold mb-2">RLS Approach</h3>
+        <ul class="list-disc pl-6 space-y-1 text-zinc-700 dark:text-zinc-300">
+          <li><code class="font-mono">auth.jwt() → app_metadata.tenant_id</code> set on login</li>
+          <li>All policies check <code class="font-mono">tenant_id = current_tenant_id()</code></li>
+          <li>Platform Admin bypass via service_role, audited</li>
+          <li>Supabase Storage buckets namespaced by tenant_id</li>
+        </ul>
+      </section>
+
+      <!-- 4. DB Schema -->
+      <section id="database-schema" class="scroll-mt-24 mb-16">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">4. Database Schema v1</h2>
+        <p class="text-sm text-zinc-600 dark:text-zinc-400 mb-4">Core tables with RLS. Extensions: <code class="font-mono">pgcrypto, uuid-ossp</code>.</p>
+
+        <div class="space-y-6">
+          <!-- SQL blocks -->
+          <div class="group">
+            <div class="flex items-center justify-between mb-2">
+              <h4 class="font-mono text-sm font-semibold">tenants.sql</h4>
+              <button data-copy class="text-xs px-2 py-1 rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800">Copy</button>
+            </div>
+            <pre class="overflow-x-auto rounded-xl bg-zinc-950 text-zinc-100 p-4 text-xs leading-relaxed"><code>CREATE TABLE tenants (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  slug text UNIQUE NOT NULL,
+  name text NOT NULL,
+  dodo_customer_id text,
+  status text NOT NULL DEFAULT 'trialing' CHECK (status IN ('trialing','active','past_due','canceled')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE tenants ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "tenant_isolation_select" ON tenants FOR SELECT USING (id = current_tenant_id());
+CREATE POLICY "tenant_isolation_update" ON tenants FOR UPDATE USING (id = current_tenant_id());</code></pre>
+          </div>
+
+          <div class="group">
+            <div class="flex items-center justify-between mb-2">
+              <h4 class="font-mono text-sm font-semibold">users & memberships.sql</h4>
+              <button data-copy class="text-xs px-2 py-1 rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800">Copy</button>
+            </div>
+            <pre class="overflow-x-auto rounded-xl bg-zinc-950 text-zinc-100 p-4 text-xs leading-relaxed"><code>CREATE TABLE memberships (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  role text NOT NULL CHECK (role IN ('owner','admin','member','readonly')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(tenant_id, user_id)
+);
+ALTER TABLE memberships ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "members_read_own_tenant" ON memberships FOR SELECT USING (tenant_id = current_tenant_id());
+CREATE POLICY "owners_manage_members" ON memberships FOR ALL USING (
+  tenant_id = current_tenant_id() AND EXISTS (
+    SELECT 1 FROM memberships m WHERE m.tenant_id = current_tenant_id()
+    AND m.user_id = auth.uid() AND m.role IN ('owner','admin')
+  )
+);</code></pre>
+          </div>
+
+          <div class="group">
+            <div class="flex items-center justify-between mb-2">
+              <h4 class="font-mono text-sm font-semibold">subscriptions & plans.sql</h4>
+              <button data-copy class="text-xs px-2 py-1 rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800">Copy</button>
+            </div>
+            <pre class="overflow-x-auto rounded-xl bg-zinc-950 text-zinc-100 p-4 text-xs leading-relaxed"><code>CREATE TABLE plans (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  dodo_product_id text NOT NULL,
+  dodo_price_id text NOT NULL,
+  features jsonb NOT NULL DEFAULT '{}',
+  limits jsonb NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE subscriptions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  dodo_subscription_id text UNIQUE NOT NULL,
+  dodo_customer_id text NOT NULL,
+  plan_id text NOT NULL REFERENCES plans(id),
+  status text NOT NULL,
+  current_period_end timestamptz,
+  cancel_at_period_end boolean DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "sub_isolation" ON subscriptions FOR SELECT USING (tenant_id = current_tenant_id());</code></pre>
+          </div>
+
+          <div class="group">
+            <div class="flex items-center justify-between mb-2">
+              <h4 class="font-mono text-sm font-semibold">leads.sql</h4>
+              <button data-copy class="text-xs px-2 py-1 rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800">Copy</button>
+            </div>
+            <pre class="overflow-x-auto rounded-xl bg-zinc-950 text-zinc-100 p-4 text-xs leading-relaxed"><code>CREATE TABLE leads (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  source text NOT NULL,
+  email text,
+  phone text,
+  name text,
+  payload jsonb NOT NULL DEFAULT '{}',
+  score integer DEFAULT 0,
+  status text NOT NULL DEFAULT 'new' CHECK (status IN ('new','working','qualified','lost','converted')),
+  assigned_to uuid REFERENCES auth.users(id),
+  dedupe_key text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX ON leads(tenant_id, created_at DESC);
+CREATE INDEX ON leads(tenant_id, dedupe_key);
+ALTER TABLE leads ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "leads_isolation" ON leads FOR ALL USING (tenant_id = current_tenant_id()) WITH CHECK (tenant_id = current_tenant_id());
+
+CREATE TABLE lead_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL,
+  lead_id uuid NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  type text NOT NULL,
+  data jsonb NOT NULL DEFAULT '{}',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE lead_events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "lead_events_isolation" ON lead_events FOR ALL USING (tenant_id = current_tenant_id()) WITH CHECK (tenant_id = current_tenant_id());</code></pre>
+          </div>
+
+          <div class="group">
+            <div class="flex items-center justify-between mb-2">
+              <h4 class="font-mono text-sm font-semibold">workflows.sql</h4>
+              <button data-copy class="text-xs px-2 py-1 rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800">Copy</button>
+            </div>
+            <pre class="overflow-x-auto rounded-xl bg-zinc-950 text-zinc-100 p-4 text-xs leading-relaxed"><code>CREATE TABLE workflows (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  key text NOT NULL,
+  name text NOT NULL,
+  trigger_type text NOT NULL,
+  trigger_config jsonb NOT NULL DEFAULT '{}',
+  actions jsonb NOT NULL DEFAULT '[]',
+  enabled boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(tenant_id, key)
+);
+ALTER TABLE workflows ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "wf_isolation" ON workflows FOR ALL USING (tenant_id = current_tenant_id()) WITH CHECK (tenant_id = current_tenant_id());
+
+CREATE TABLE workflow_runs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL,
+  workflow_id uuid NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  trigger_event jsonb NOT NULL,
+  status text NOT NULL DEFAULT 'running',
+  output jsonb,
+  error text,
+  started_at timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz
+);
+ALTER TABLE workflow_runs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "wf_runs_isolation" ON workflow_runs FOR ALL USING (tenant_id = current_tenant_id()) WITH CHECK (tenant_id = current_tenant_id());</code></pre>
+          </div>
+
+          <div class="group">
+            <div class="flex items-center justify-between mb-2">
+              <h4 class="font-mono text-sm font-semibold">templates & audit.sql</h4>
+              <button data-copy class="text-xs px-2 py-1 rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800">Copy</button>
+            </div>
+            <pre class="overflow-x-auto rounded-xl bg-zinc-950 text-zinc-100 p-4 text-xs leading-relaxed"><code>CREATE TABLE templates (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  industry text NOT NULL,
+  version text NOT NULL,
+  manifest jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE template_installations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  template_id text NOT NULL REFERENCES templates(id),
+  version text NOT NULL,
+  config jsonb NOT NULL DEFAULT '{}',
+  installed_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(tenant_id, template_id)
+);
+ALTER TABLE template_installations ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "tmpl_inst_isolation" ON template_installations FOR ALL USING (tenant_id = current_tenant_id()) WITH CHECK (tenant_id = current_tenant_id());
+
+CREATE TABLE audit_logs (
+  id bigserial PRIMARY KEY,
+  tenant_id uuid,
+  actor_id uuid,
+  action text NOT NULL,
+  entity text NOT NULL,
+  entity_id text,
+  diff jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "audit_tenant_read" ON audit_logs FOR SELECT USING (tenant_id = current_tenant_id() OR tenant_id IS NULL);</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. Roles -->
+      <section id="roles" class="scroll-mt-24 mb-16">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">5. User Roles & Permissions</h2>
+        <div class="overflow-x-auto rounded-2xl border border-zinc-200 dark:border-zinc-800">
+          <table class="w-full text-sm">
+            <thead class="bg-zinc-100 dark:bg-zinc-900/60 text-left">
+              <tr>
+                <th class="px-4 py-3 font-semibold">Role</th>
+                <th class="px-4 py-3 font-semibold">Manage Billing</th>
+                <th class="px-4 py-3 font-semibold">Manage Members</th>
+                <th class="px-4 py-3 font-semibold">Edit Workflows</th>
+                <th class="px-4 py-3 font-semibold">View Leads</th>
+                <th class="px-4 py-3 font-semibold">Edit Leads</th>
+                <th class="px-4 py-3 font-semibold">Install Templates</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-zinc-200 dark:divide-zinc-800 bg-white dark:bg-zinc-950">
+              <tr><td class="px-4 py-3 font-medium">Platform Admin</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+              <tr><td class="px-4 py-3 font-medium">Tenant Owner</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+              <tr><td class="px-4 py-3 font-medium">Tenant Admin</td><td>❌</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+              <tr><td class="px-4 py-3 font-medium">Tenant User</td><td>❌</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td><td>❌</td></tr>
+              <tr><td class="px-4 py-3 font-medium">Read-only</td><td>❌</td><td>❌</td><td>❌</td><td>✅</td><td>❌</td><td>❌</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 6. Billing -->
+      <section id="billing" class="scroll-mt-24 mb-16">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">6. Subscription & Billing with Dodo</h2>
+        
+        <div class="rounded-2xl border border-violet-300 dark:border-violet-800 bg-violet-50 dark:bg-violet-950/30 p-5 mb-6">
+          <p class="font-semibold text-violet-900 dark:text-violet-200">Dodo is the sole payment processor</p>
+          <p class="text-sm mt-1 text-violet-900/80 dark:text-violet-200/80">No Stripe. All checkout sessions, subscriptions, invoices, and customer portal are powered by Dodo Payments API.</p>
+        </div>
+
+        <h3 class="font-semibold mb-2">Plans Structure</h3>
+        <div class="overflow-x-auto rounded-2xl border border-zinc-200 dark:border-zinc-800 mb-6">
+          <table class="w-full text-sm">
+            <thead class="bg-zinc-100 dark:bg-zinc-900/60">
+              <tr><th class="px-4 py-3 text-left">Plan ID</th><th class="px-4 py-3 text-left">Name</th><th class="px-4 py-3 text-left">Dodo Product</th><th class="px-4 py-3 text-left">Monthly</th><th class="px-4 py-3 text-left">Limits</th></tr>
+            </thead>
+            <tbody class="bg-white dark:bg-zinc-950 divide-y divide-zinc-200 dark:divide-zinc-800">
+              <tr><td class="px-4 py-3 font-mono">starter</td><td>Starter</td><td class="font-mono">prod_eth_starter</td><td>$49</td><td>1k leads/mo, 3 workflows</td></tr>
+              <tr><td class="px-4 py-3 font-mono">growth</td><td>Growth</td><td class="font-mono">prod_eth_growth</td><td>$149</td><td>10k leads/mo, unlimited workflows</td></tr>
+              <tr><td class="px-4 py-3 font-mono">scale</td><td>Scale</td><td class="font-mono">prod_eth_scale</td><td>$399</td><td>50k leads/mo, priority support</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 class="font-semibold mb-2">Dodo Integration Flow</h3>
+        <div class="mermaid">
+sequenceDiagram
+  participant User
+  participant FE as Next.js
+  participant EF as Edge Function
+  participant DODO as Dodo API
+  participant DB as Supabase
+
+  User->>FE: Click Upgrade
+  FE->>EF: create-checkout-session(plan_id)
+  EF->>DODO: POST /checkout/sessions
+  DODO-->>EF: checkout_url
+  EF-->>FE: redirect_url
+  User->>DODO: Complete payment
+  DODO->>EF: webhook payment.succeeded
+  EF->>DB: upsert subscription + tenant.status=active
+  DODO->>EF: subscription.created
+  EF->>DB: provision limits
+        </div>
+
+        <h3 class="font-semibold mt-8 mb-2">Webhook Handlers</h3>
+        <pre class="overflow-x-auto rounded-xl bg-zinc-950 text-zinc-100 p-4 text-xs"><code>// /api/webhooks/dodo
+export async function POST(req) {
+  const sig = req.headers.get('dodo-signature');
+  const raw = await req.text();
+  const event = verifyDodoWebhook(raw, sig); // HMAC
+
+  switch(event.type) {
+    case 'payment.succeeded':
+      await provisionTenant(event.data.customer_id, event.data.subscription_id);
+      break;
+    case 'subscription.created':
+    case 'subscription.updated':
+      await upsertSubscription(event.data);
+      break;
+    case 'subscription.cancelled':
+      await markPastDue(event.data.subscription_id);
+      break;
+  }
+  return Response.json({ received: true });
+}</code></pre>
+      </section>
+
+      <!-- 7. Revenue -->
+      <section id="revenue" class="scroll-mt-24 mb-16">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">7. Revenue Model</h2>
+        <ul class="list-disc pl-6 space-y-2 text-zinc-700 dark:text-zinc-300">
+          <li><b>SaaS Subscription Tiers</b> – Starter / Growth / Scale via Dodo</li>
+          <li><b>Template Marketplace (Phase 2)</b> – 70/30 revenue share with template creators, payouts via Dodo Connect</li>
+          <li><b>Add-ons</b> – Extra lead volume, dedicated webhook endpoints</li>
+        </ul>
+      </section>
+
+      <!-- 8. Workflow -->
+      <section id="workflow" class="scroll-mt-24 mb-16">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">8. Workflow Engine Design v1</h2>
+        <p class="text-zinc-700 dark:text-zinc-300 mb-4">Simple trigger → action model. No DAG. Runs in Edge Function with queue fallback.</p>
+        <pre class="overflow-x-auto rounded-xl bg-zinc-950 text-zinc-100 p-4 text-xs"><code>{
+  "key": "lead_new_notify",
+  "trigger_type": "lead.created",
+  "trigger_config": { "min_score": 50 },
+  "actions": [
+    { "type": "send_email", "config": { "template": "lead_alert" } },
+    { "type": "webhook", "config": { "url": "{{tenant.webhook_url}}" } },
+    { "type": "assign_user", "config": { "round_robin": true } }
+  ]
+}</code></pre>
+        <h3 class="font-semibold mt-6 mb-2">Supported Triggers v1</h3>
+        <p class="text-sm text-zinc-700 dark:text-zinc-300">lead.created, lead.updated, subscription.created, form.submitted</p>
+        <h3 class="font-semibold mt-4 mb-2">Supported Actions v1</h3>
+        <p class="text-sm text-zinc-700 dark:text-zinc-300">send_email, send_sms, webhook, assign_user, update_lead, create_task</p>
+      </section>
+
+      <!-- 9. Template -->
+      <section id="templates" class="scroll-mt-24 mb-16">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">9. Template System</h2>
+        <p class="text-zinc-700 dark:text-zinc-300 mb-4">Templates bundle workflows, forms, copy, and UI config for a vertical.</p>
+        <div class="grid md:grid-cols-3 gap-4">
+          <div class="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-5 bg-white dark:bg-zinc-950">
+            <p class="font-semibold">Home Services</p>
+            <p class="text-sm mt-1 text-zinc-600 dark:text-zinc-400">Emergency call routing, quote request form, SMS follow-up, Google Review request workflow.</p>
+          </div>
+          <div class="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-5 bg-white dark:bg-zinc-950">
+            <p class="font-semibold">Health & Wellness</p>
+            <p class="text-sm mt-1 text-zinc-600 dark:text-zinc-400">HIPAA-safe intake, appointment reminder, no-show reactivation, consent capture.</p>
+          </div>
+          <div class="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-5 bg-white dark:bg-zinc-950">
+            <p class="font-semibold">Professional Services</p>
+            <p class="text-sm mt-1 text-zinc-600 dark:text-zinc-400">Consult booking, qualification form, proposal send, nurture sequence.</p>
+          </div>
+        </div>
+        <h3 class="font-semibold mt-6 mb-2">Installation Flow</h3>
+        <ol class="list-decimal pl-6 space-y-1 text-sm text-zinc-700 dark:text-zinc-300">
+          <li>User selects template → preview manifest</li>
+          <li>Edge Function clones workflows with tenant_id</li>
+          <li>Forms and copy written to tenant config</li>
+          <li>template_installations record created</li>
+        </ol>
+      </section>
+
+      <!-- 10. Lead Engine -->
+      <section id="lead-engine" class="scroll-mt-24 mb-16">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">10. Lead Engine v1 Specification</h2>
+        <div class="grid md:grid-cols-3 gap-4 mb-6">
+          <div class="rounded-xl bg-emerald-50 dark:bg-emerald-950/30 p-4 border border-emerald-200 dark:border-emerald-900">
+            <p class="font-semibold text-emerald-900 dark:text-emerald-200">Inputs</p>
+            <p class="text-sm mt-1">Web forms, Facebook Lead Ads, Email parsing, Phone (Twilio webhook)</p>
+          </div>
+          <div class="rounded-xl bg-sky-50 dark:bg-sky-950/30 p-4 border border-sky-200 dark:border-sky-900">
+            <p class="font-semibold text-sky-900 dark:text-sky-200">Process</p>
+            <p class="text-sm mt-1">Normalize → Deduplicate → Score → Assign</p>
+          </div>
+          <div class="rounded-xl bg-violet-50 dark:bg-violet-950/30 p-4 border border-violet-200 dark:border-violet-900">
+            <p class="font-semibold text-violet-900 dark:text-violet-200">Outputs</p>
+            <p class="text-sm mt-1">CRM record, Notification, Workflow trigger</p>
+          </div>
+        </div>
+        <h3 class="font-semibold mb-2">API Endpoints</h3>
+        <pre class="overflow-x-auto rounded-xl bg-zinc-950 text-zinc-100 p-4 text-xs"><code>POST /api/leads/ingest  # public, HMAC signed
+GET  /api/leads
+PATCH /api/leads/:id
+POST /api/leads/:id/events</code></pre>
+        <h3 class="font-semibold mt-6 mb-2">Acceptance Criteria</h3>
+        <ul class="list-disc pl-6 text-sm space-y-1 text-zinc-700 dark:text-zinc-300">
+          <li>Dedupe within 5 min window by email+phone hash</li>
+          <li>Score 0-100 based on source + fields completeness</li>
+          <li>Assignment respects user capacity and round-robin</li>
+          <li>All writes audit logged</li>
+        </ul>
+      </section>
+
+      <!-- 11. Deployment -->
+      <section id="deployment" class="scroll-mt-24 mb-16">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">11. Deployment Architecture</h2>
+        <ul class="list-disc pl-6 space-y-1 text-zinc-700 dark:text-zinc-300">
+          <li><b>Supabase Project</b> – Production + Staging</li>
+          <li><b>Vercel</b> – Next.js with Edge Runtime</li>
+          <li><b>Edge Functions</b> – Deno, deployed via Supabase CLI</li>
+          <li><b>Env Vars</b> – <code class="font-mono">DODO_API_KEY, DODO_WEBHOOK_SECRET, SUPABASE_URL, SUPABASE_SERVICE_ROLE</code></li>
+          <li><b>CI/CD</b> – GitHub Actions: test → migrate → deploy</li>
+        </ul>
+      </section>
+
+      <!-- 12. API -->
+      <section id="api" class="scroll-mt-24 mb-16">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">12. API Contracts</h2>
+        <pre class="overflow-x-auto rounded-xl bg-zinc-950 text-zinc-100 p-4 text-xs"><code>openapi: 3.0.3
+info:
+  title: ETHINX API
+  version: 1.0.0
+paths:
+  /api/leads:
+    get:
+      summary: List leads
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+    post:
+      summary: Create lead
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string }
+                phone: { type: string }
+                source: { type: string }
+  /api/workflows:
+    get: { summary: List workflows }
+  /api/tenants/me:
+    get: { summary: Current tenant }</code></pre>
+      </section>
+
+      <!-- 13. Manus -->
+      <section id="manus" class="scroll-mt-24 mb-16">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">13. Manus-Optimised Build Instructions Template</h2>
+        <div class="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-6">
+          <pre class="text-xs leading-relaxed overflow-x-auto"><code>### TASK: Implement Dodo Checkout Session
+**Requirements**
+- Create Edge Function `create-checkout-session`
+- Input: plan_id, tenant_id
+- Call Dodo API with customer email
+- Return checkout_url
+
+**Tables**
+- tenants (dodo_customer_id)
+- plans (dodo_price_id)
+
+**Success Criteria**
+- 200 response with url
+- Webhook `payment.succeeded` provisions subscription
+- RLS prevents cross-tenant access
+- Tests pass</code></pre>
+        </div>
+      </section>
+
+      <!-- 14. Roadmap -->
+      <section id="roadmap" class="scroll-mt-24 mb-16">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">14. Roadmap Phases</h2>
+        <div class="space-y-4">
+          <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-5 bg-white dark:bg-zinc-950">
+            <p class="font-semibold">Phase 1: Revenue Engine</p>
+            <p class="text-sm text-zinc-600 dark:text-zinc-400">Dodo billing, lead engine, 3 templates, workflow v1</p>
+          </div>
+          <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-5 bg-white dark:bg-zinc-950">
+            <p class="font-semibold">Phase 2: Template Marketplace</p>
+            <p class="text-sm text-zinc-600 dark:text-zinc-400">Creator portal, versioning, revenue share</p>
+          </div>
+          <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-5 bg-white dark:bg-zinc-950">
+            <p class="font-semibold">Phase 3: Operator Ecosystem</p>
+            <p class="text-sm text-zinc-600 dark:text-zinc-400">Partner onboarding, white-label</p>
+          </div>
+          <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-5 bg-white dark:bg-zinc-950">
+            <p class="font-semibold">Phase 4: AI Optimisation</p>
+            <p class="text-sm text-zinc-600 dark:text-zinc-400">Lead scoring ML, workflow suggestions</p>
+          </div>
+          <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-5 bg-white dark:bg-zinc-950">
+            <p class="font-semibold">Phase 5: Autonomous Deployment</p>
+            <p class="text-sm text-zinc-600 dark:text-zinc-400">Self-provisioning tenants, auto-template fitting</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 15. Out of Scope -->
+      <section id="out-of-scope" class="scroll-mt-24 mb-24">
+        <h2 class="text-2xl font-bold tracking-tight mb-4">15. Deliberately Out of Scope for v1</h2>
+        <div class="rounded-2xl border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/30 p-6">
+          <ul class="list-disc pl-6 space-y-1 text-rose-900 dark:text-rose-200 text-sm">
+            <li>Agent choreography / multi-agent orchestration</li>
+            <li>DAG workflow editor</li>
+            <li>Multiple Cloud Run services / microservices</li>
+            <li>Complex event orchestration / Saga patterns</li>
+            <li>Custom code execution in workflows</li>
+            <li>Bring-your-own database</li>
+            <li>Stripe, Paddle, or other payment processors</li>
+          </ul>
+        </div>
+      </section>
+
+      <footer class="border-t border-zinc-200 dark:border-zinc-800 pt-8 pb-16 text-xs text-zinc-500 dark:text-zinc-500">
+        <p>ETHINX Canonical Architecture v1 • © 2026 ETHINX Labs. This document is the Source of Truth for Manus builds. Payment processing is exclusively via Dodo Payments.</p>
+      </footer>
+    </main>
+  </div>
+</div>
+
+<!-- Overlay for mobile -->
+<div id="overlay" class="fixed inset-0 bg-black/40 z-30 hidden lg:hidden"></div>
+
+<script>
+mermaid.initialize({ startOnLoad:true, theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default' });
+
+// Build nav
+const sections = [
+  {id:'vision', title:'1. Vision & Boundaries'},
+  {id:'system-overview', title:'2. System Overview'},
+  {id:'multi-tenancy', title:'3. Multi-Tenancy'},
+  {id:'database-schema', title:'4. Database Schema'},
+  {id:'roles', title:'5. Roles & Permissions'},
+  {id:'billing', title:'6. Billing with Dodo'},
+  {id:'revenue', title:'7. Revenue Model'},
+  {id:'workflow', title:'8. Workflow Engine'},
+  {id:'templates', title:'9. Template System'},
+  {id:'lead-engine', title:'10. Lead Engine'},
+  {id:'deployment', title:'11. Deployment'},
+  {id:'api', title:'12. API Contracts'},
+  {id:'manus', title:'13. Manus Build Template'},
+  {id:'roadmap', title:'14. Roadmap'},
+  {id:'out-of-scope', title:'15. Out of Scope'},
+];
+const navList = document.getElementById('navList');
+navList.innerHTML = sections.map(s => `<li><a href="#${s.id}" class="block px-3 py-2 rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-900 transition text-zinc-700 dark:text-zinc-300">${s.title}</a></li>`).join('');
+
+// Filter
+document.getElementById('navSearch').addEventListener('input', e => {
+  const q = e.target.value.toLowerCase();
+  navList.querySelectorAll('li').forEach(li => {
+    li.style.display = li.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+});
+
+// Theme toggle
+document.getElementById('themeToggle').addEventListener('click', () => {
+  const html = document.documentElement;
+  html.classList.toggle('dark');
+  localStorage.theme = html.classList.contains('dark') ? 'dark' : 'light';
+  location.reload();
+});
+
+// Mobile menu
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('overlay');
+document.getElementById('menuBtn').addEventListener('click', () => {
+  sidebar.classList.toggle('-translate-x-full');
+  overlay.classList.toggle('hidden');
+});
+overlay.addEventListener('click', () => {
+  sidebar.classList.add('-translate-x-full');
+  overlay.classList.add('hidden');
+});
+
+// Copy buttons
+document.querySelectorAll('[data-copy]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const code = btn.parentElement.nextElementSibling?.innerText || '';
+    navigator.clipboard.writeText(code);
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 1500);
+  });
+});
+
+// Active link highlight
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(entry => {
+    if(entry.isIntersecting){
+      navList.querySelectorAll('a').forEach(a => a.classList.remove('bg-violet-100','dark:bg-violet-900/40','text-violet-700','dark:text-violet-300'));
+      const link = navList.querySelector(`a[href="#${entry.target.id}"]`);
+      if(link) link.classList.add('bg-violet-100','dark:bg-violet-900/40','text-violet-700','dark:text-violet-300');
+    }
+  });
+},{ rootMargin:'-40% 0px -55% 0px' });
+document.querySelectorAll('section[id]').forEach(s => observer.observe(s));
+</script>
+<script>(function(){document.addEventListener("click",function(e){var a=e.target.closest("[data-product-id]");if(!a)return;e.preventDefault();var pid=a.getAttribute("data-product-id");if(pid)parent.postMessage({type:"ecto-artifact-link-click",productId:pid},"*")})})();</script>
+</body>
+</html>
