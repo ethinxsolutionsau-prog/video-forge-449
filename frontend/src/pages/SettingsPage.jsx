@@ -70,7 +70,7 @@ export default function SettingsPage() {
               <option value="gemini/gemini-3-flash-preview">gemini / 3-flash-preview</option>
             </select>
             <p className="font-mono text-[10px] text-zinc-600 mt-2">
-              Powered by Emergent LLM key · generation falls back to deterministic output if the provider is unavailable.
+              Generation falls back to deterministic output if the provider is unavailable.
             </p>
           </div>
           <div>
