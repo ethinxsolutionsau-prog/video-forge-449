@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { toast } from "sonner";
 import { Film, Loader2, CheckCircle2, AlertCircle, Download, ChevronDown, ChevronRight } from "lucide-react";
-import { api, formatApiError } from "../lib/api";
+import { api } from "../lib/api";
 
 /**
  * Single-click render orchestrator wired to the backend /render/auto endpoint.

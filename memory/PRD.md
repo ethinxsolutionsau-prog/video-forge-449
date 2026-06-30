@@ -265,3 +265,61 @@ End-to-end verified: 10:45 narration on a 9,397-char script, 64+ sub-clip cuts, 
 4. Real-time SSE streaming for script generation.
 5. Stripe billing + cost-limit enforcement (currently cost_estimate tracked but not enforced).
 6. Render polish — Ken-Burns zoom on stills, simple per-scene crossfades, captions burn-in option.
+
+### Phase 10 — Status/preflight consistency + one-click render (2026-06-30) ✅
+
+This phase plugs the gap between the project's advertised lifecycle status and the
+render preflight gate, and ships a single-action render flow on the Overview tab.
+
+- [x] **Status truth = preflight truth**: `compute_project_status` now takes three
+  new keyword args (`has_selected_thumbnail`, `has_voiceover`, `full_scene_coverage`)
+  and only returns `READY_TO_RENDER` when **every** preflight item is satisfied —
+  including selected thumbnail, full or per-scene voiceover, and full scene-asset
+  coverage. Project listings no longer falsely advertise readiness. `seed.py`
+  unaffected (new args default to `False`).
+- [x] **`media_type="any"` alias on `/auto-attach-assets`**: friendlier default
+  treated as `"both"`. Old enum (`both|videos|photos`) still accepted, no
+  behaviour change for existing callers.
+- [x] **Full-script voiceover auto-selects**: after `POST /voiceover/generate-script`
+  the new asset is marked `status=selected` and `project.selected_voiceover_asset_id`
+  is set in the same transaction. Mirrors the thumbnail auto-chain.
+- [x] **ETHINX-style automation loop — `POST /api/projects/{id}/render/auto`**:
+  new module `app/auto_render.py` runs preflight-gated remediation in process.
+  Iterates up to 4 times. Soft blockers (`scene_assets`, `voiceover`) are
+  auto-remediated by calling the existing handlers; hard blockers
+  (`script`/`scenes`/`metadata`/`thumbnail`) raise a clear 400 with the missing
+  keys. Each iteration logs to `facelessforge.auto_render` at INFO level.
+  Response shape: `{ok, job:{id,status,...}, decisions:[{iteration,preflight_ok,
+  issues,scene_coverage,remediation?}]}`.
+- [x] **One-click 🎬 Render now UI**: `AutoRenderButton.jsx` mounted on the
+  project Overview tab. Single click → POST `/render/auto` → renders the
+  decision trace step-by-step → polls the render job at 2.5s intervals →
+  embeds the final MP4 player with download link. Wall-clock click-to-MP4
+  ≈ 26 s in preview (90s video). data-testids: `auto-render-card`,
+  `auto-render-btn`, `auto-render-trace`, `auto-render-trace-toggle`,
+  `auto-render-progress`, `auto-render-result-ok`, `auto-render-result-error`,
+  `auto-render-download`.
+- [x] **End-to-end verification**: fresh project → generate script/scenes/metadata
+  (3 actions, thumbnail auto-chains on the metadata step) → click 🎬 Render now
+  → real MP4 (H.264 1920×1080, AAC, on Cloudflare R2 at `videos.ethinx.solutions`)
+  produced in ~26 s. Frontend Playwright E2E: 100%. Backend curl trace: clean.
+
+### Files added/changed (Phase 10)
+- New: `/app/backend/app/auto_render.py` (179 lines)
+- New: `/app/frontend/src/components/AutoRenderButton.jsx` (188 lines)
+- Modified: `/app/backend/app/scoring.py` (`compute_project_status` signature)
+- Modified: `/app/backend/app/routes.py`:
+  - `_attach_project_view` computes `has_selected_thumbnail`/`has_voiceover`/`full_scene_coverage`
+  - `POST /projects/{id}/render/auto` endpoint added
+  - `POST /voiceover/generate-script` auto-selects new asset + sets `selected_voiceover_asset_id`
+- Modified: `/app/backend/app/models.py` (`AutoAttachRequest.media_type` accepts `"any"`)
+- Modified: `/app/frontend/src/pages/ProjectDetailPage.jsx` (mount `AutoRenderButton` on Overview)
+- Modified: `/app/frontend/public/index.html` and `/app/frontend/src/pages/SettingsPage.jsx` (Emergent branding stripped from visible UI — separate request)
+- Modified: `/app/frontend/src/lib/api.js` (global 401 interceptor → `/login?returnTo=...&reason=session_expired`)
+- Modified: `/app/frontend/src/pages/LoginPage.jsx` (honours `returnTo` + `reason`)
+
+### Current pipeline state (2026-06-30)
+All seven stages reachable from a single React workflow with three clicks after
+project creation: Generate Script → Generate Scenes → Generate Metadata →
+🎬 Render now. The 🎬 step alone handles scene assets, voiceover, preflight,
+queue, ffmpeg, R2 upload, and webhook delivery.
