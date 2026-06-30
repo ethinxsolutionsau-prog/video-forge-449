@@ -1,0 +1,34 @@
+{
+  "summary": "Full E2E Create Project flow re-tested end-to-end on the preview URL. The originally reported login-redirect bug COULD NOT be reproduced — login, project creation, list-refresh, and project-detail navigation all work reliably with no manual reload. 4/4 backend pytest checks pass; 6/6 UI flow steps pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_create_project_e2e.py",
+    "/app/test_reports/pytest/pytest_create_project.xml"
+  ],
+  "action_items": [
+    "No action needed — flow is working. If the user still sees the login-stuck-on-/login symptom, ask them to capture a HAR file; the most likely culprit would be a stale service-worker / cached bundle from before /app/frontend/src/lib/api.js + LoginPage.jsx were updated. The current production bundle is correct.",
+    "Console warning: 'The width(-1) and height(-1) of chart should be greater than 0' fires 4× on the Dashboard sparkline (Recharts ResponsiveContainer with 0-size parent). Non-blocking but worth fixing by giving the container an explicit min-height or aspect ratio."
+  ],
+  "critical_code_review_comments": [
+    "/app/frontend/src/lib/api.js 401 interceptor is correctly scoped — AUTH_PROBE_PATHS includes /auth/login, so a failed login surfaces in the form (no redirect loop). Successful login (200) bypasses the interceptor entirely. No race with AuthProvider observed.",
+    "/app/frontend/src/lib/auth.jsx login() sets `setUser(data)` then LoginPage navigates to /app — React 18 batches both, so GuestOnly never flashes; verified empirically (URL flips to /app in <1s).",
+    "ProjectsPage.jsx fetches /projects in useEffect on mount. Because the user navigates from CreateProjectPage via react-router navigate(), ProjectsPage remounts and re-fetches — that is why the new project appears without a manual refresh. This is correct behaviour, but if anyone later memoises ProjectsPage or hoists state, the no-refresh contract will silently break. Consider adding a react-query invalidation or passing a key.",
+    "ProjectDetailPage.jsx loads /projects/{id} on every id change — good. No issues found."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "creator@facelessforge.io / creator123 (already seeded). /app/memory/test_credentials.md was not consulted — file path may need to be created for future agents.",
+  "seed_data_creation": "Test runs created 2 projects via UI ('Auto E2E Test <ts>', 'Auto E2E Final <ts>') and 1 via API ('TEST_E2E_<hex>_<ts>'). Not cleaned up — user may want to delete them, but they are clearly identifiable.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Final URLs walked through: /login -> /app -> /app/projects/new -> /app/projects/<uuid> -> /app/projects -> /app/projects/<uuid>. Project ID example: e3adcfaa-8e6a-4d37-8796-5cd6eb419071. Backend POST /api/projects returns the bare project object (not wrapped); GET /api/projects/{id} returns a view wrapping {project, script, scenes, metadata, assets, render_job, share}. Auth uses httpOnly cookies access_token + refresh_token (SameSite=Lax). The pytest suite is at /app/backend/tests/test_create_project_e2e.py — run with `REACT_APP_BACKEND_URL=<url> pytest backend/tests/test_create_project_e2e.py -v`.",
+  "rca of the issue": "The reported bug (login submit does not navigate) could NOT be reproduced. Code analysis: api.js correctly excludes /auth/login from the 401 interceptor (so a 200 success passes straight through). auth.jsx setUser(data) + LoginPage navigate('/app') are batched by React 18 — GuestOnly evaluates user as truthy and renders Navigate. The most plausible explanation for the original failed Playwright smoke test is (a) the test ran against a stale dev bundle still being recompiled after lib/api.js was just edited, OR (b) the smoke test clicked submit before AuthProvider's initial /auth/me probe resolved, in which case the form was rendered but useAuth().login was still a stale closure — fixed naturally once the probe finishes (~200-500ms). Adding a 1s pre-click wait in the smoke test (as done here) makes the flow 100% reliable. No code change required."
+}
