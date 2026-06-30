@@ -1,15 +1,25 @@
-import React, { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import React, { useEffect, useState } from "react";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
 import { useAuth } from "../lib/auth";
 import { Loader2, ArrowRight } from "lucide-react";
 
 export default function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const returnTo = params.get("returnTo") || "/app";
+  const reason = params.get("reason");
   const [email, setEmail] = useState("creator@facelessforge.io");
   const [password, setPassword] = useState("creator123");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (reason === "session_expired") {
+      toast.info("Your session expired. Please sign in again.", { id: "session-expired" });
+    }
+  }, [reason]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -17,8 +27,11 @@ export default function LoginPage() {
     setLoading(true);
     const res = await login(email, password);
     setLoading(false);
-    if (res.ok) navigate("/app");
-    else setError(res.error);
+    if (res.ok) {
+      // Only follow returnTo for in-app paths to avoid open-redirect.
+      const safe = returnTo.startsWith("/app") ? returnTo : "/app";
+      navigate(safe, { replace: true });
+    } else setError(res.error);
   };
 
   return (
