@@ -1238,6 +1238,20 @@ from . import render as render_service
 from .models import RenderStartRequest
 
 
+@router.post("/projects/{project_id}/render/auto")
+async def render_auto(project_id: str, user=Depends(get_current_user)):
+    """ETHINX-style automation: preflight-gated render with auto-remediation.
+
+    Iteratively consults the render preflight as the source of truth. For any
+    soft-blocker (missing scene assets, missing voiceover) the worker runs the
+    matching remediation, then re-checks preflight. As soon as preflight returns
+    ok=true, the render is queued. Returns the queued job descriptor plus the
+    full decision trace.
+    """
+    from .auto_render import run_auto_render
+    return await run_auto_render(project_id, user)
+
+
 @router.get("/projects/{project_id}/render/preflight")
 async def render_preflight(project_id: str, user=Depends(get_current_user)):
     """Return validation checklist for the render UI."""
