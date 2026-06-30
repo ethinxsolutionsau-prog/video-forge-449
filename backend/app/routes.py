@@ -409,7 +409,91 @@ async def generate_metadata_endpoint(project_id: str, user=Depends(get_current_u
     await db.metadata_packages.replace_one({"project_id": project_id}, doc, upsert=True)
     await _log_cost(db, project_id, "metadata", tokens=600, cost=0.04)
     await db.projects.update_one({"id": project_id}, {"$set": {"estimated_cost": float(project.get("estimated_cost", 0)) + 0.04, "updated_at": _now()}})
+
+    # Auto-chain: metadata → thumbnail briefs → first image (selected). Non-fatal on failure.
+    try:
+        await _auto_generate_thumbnails(db, project_id)
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger("facelessforge").warning(
+            "auto thumbnail chain failed for project %s: %s", project_id, e
+        )
+
     return await _attach_project_view(db, await db.projects.find_one({"id": project_id}, {"_id": 0}))
+
+
+async def _auto_generate_thumbnails(db, project_id: str) -> None:
+    """Bridge from metadata to thumbnail engine.
+
+    Generates 3 thumbnail concept briefs (idempotent — replaces existing briefs),
+    then generates a single image variant for the first brief and marks it as
+    `selected` so the downstream render pipeline always has a thumbnail ready
+    before voiceover starts.
+
+    Failures are swallowed by the caller; deterministic mocks ensure this still
+    works without LLM budget.
+    """
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    if not project:
+        return
+
+    # 1) Briefs (mirror /generate-thumbnails handler shape)
+    concepts = await gen.generate_thumbnails(project)
+    if not concepts:
+        return
+    await db.assets.delete_many({"project_id": project_id, "asset_type": "thumbnail_concept"})
+    brief_docs: list[dict] = []
+    for i, c in enumerate(concepts, start=1):
+        bd = {
+            "id": str(uuid.uuid4()),
+            "project_id": project_id,
+            "name": f"Thumbnail Concept #{i}",
+            "asset_type": "thumbnail_concept",
+            "file_path": None,
+            "source": "llm" if os.environ.get("EMERGENT_LLM_KEY") else "fallback",
+            "tags": ["thumbnail", "concept"],
+            "status": "ready",
+            "brief": c,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        brief_docs.append(bd)
+        await db.assets.insert_one(dict(bd))
+    await _log_cost(db, project_id, "thumbnails", tokens=400, cost=0.03)
+    await db.projects.update_one(
+        {"id": project_id},
+        {"$set": {"estimated_cost": float(project.get("estimated_cost", 0)) + 0.03, "updated_at": _now()}},
+    )
+
+    # 2) Image for the first brief — mark as selected so downstream voiceover/render
+    # always has a thumbnail. Only auto-generate if no thumbnail is already selected.
+    if project.get("selected_thumbnail_asset_id"):
+        return
+    first_brief = brief_docs[0]
+    try:
+        generated = await thumb_images.generate_thumbnail_images(
+            project, first_brief.get("brief") or {}, variants=1, project_id=project_id,
+        )
+    except Exception:  # noqa: BLE001
+        return
+    if not generated:
+        return
+    now = _now()
+    g = generated[0]
+    g["brief_asset_id"] = first_brief["id"]
+    g["status"] = "selected"
+    g["created_at"] = now
+    g["updated_at"] = now
+    await db.assets.insert_one(dict(g))
+    await db.projects.update_one(
+        {"id": project_id},
+        {"$set": {"selected_thumbnail_asset_id": g["id"], "updated_at": now}},
+    )
+    if not g.get("mock"):
+        await db.projects.update_one(
+            {"id": project_id},
+            {"$inc": {"estimated_cost": 0.02}, "$set": {"updated_at": now}},
+        )
 
 
 @router.post("/projects/{project_id}/generate-thumbnails")

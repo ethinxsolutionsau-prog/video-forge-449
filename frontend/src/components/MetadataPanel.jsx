@@ -25,11 +25,11 @@ export default function MetadataPanel({ projectId, metadata, canEdit, onChange, 
 
   const generate = async () => {
     setGenerating(true);
-    toast.loading("Generating metadata package…", { id: "gen-meta" });
+    toast.loading("Generating metadata + thumbnail…", { id: "gen-meta" });
     try {
       const { data } = await api.post(`/projects/${projectId}/generate-metadata`);
       onChange(data);
-      toast.success("Metadata generated", { id: "gen-meta" });
+      toast.success("Metadata + thumbnail ready", { id: "gen-meta" });
     } catch (err) {
       toast.error("Generation failed", { id: "gen-meta", description: formatApiError(err.response?.data?.detail) || err.message });
     } finally {
