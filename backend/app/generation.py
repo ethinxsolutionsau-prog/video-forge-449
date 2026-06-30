@@ -23,10 +23,27 @@ def _llm_available() -> bool:
     return bool(os.environ.get("EMERGENT_LLM_KEY"))
 
 
-async def _llm_json(system: str, user: str, session_id: str) -> Optional[dict]:
-    """Call the LLM and parse a JSON object from its response."""
+def _model_label() -> str:
+    """Human-readable label for the configured LLM model (e.g. 'Gemini', 'GPT-5.2')."""
+    model = os.environ.get("LLM_MODEL", "gemini-3-flash-preview").lower()
+    if "gemini" in model:
+        return "Gemini"
+    if "gpt" in model or "openai" in os.environ.get("LLM_PROVIDER", "").lower():
+        return os.environ.get("LLM_MODEL", "GPT").upper().replace("GPT-", "GPT-")
+    if "claude" in model:
+        return "Claude"
+    return os.environ.get("LLM_MODEL", "LLM")
+
+
+async def _llm_json(system: str, user: str, session_id: str) -> tuple[Optional[dict], str]:
+    """Call the LLM and parse a JSON object from its response.
+
+    Returns (data, source) where source is one of:
+      - "<model-label>" (e.g. "Gemini", "GPT-5.2") on success
+      - "fallback" when LLM is unavailable or fails (data is None)
+    """
     if not _llm_available():
-        return None
+        return None, "fallback"
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
         chat = LlmChat(
@@ -34,12 +51,12 @@ async def _llm_json(system: str, user: str, session_id: str) -> Optional[dict]:
             session_id=session_id,
             system_message=system,
         ).with_model(
-            os.environ.get("LLM_PROVIDER", "openai"),
-            os.environ.get("LLM_MODEL", "gpt-5.2"),
+            os.environ.get("LLM_PROVIDER", "gemini"),
+            os.environ.get("LLM_MODEL", "gemini-3-flash-preview"),
         )
         resp = await chat.send_message(UserMessage(text=user))
         if not resp:
-            return None
+            return None, "fallback"
         text = resp.strip()
         # Strip markdown code fence if present
         if text.startswith("```"):
@@ -47,11 +64,11 @@ async def _llm_json(system: str, user: str, session_id: str) -> Optional[dict]:
         # Extract first {...} block
         m = re.search(r"\{.*\}", text, re.DOTALL)
         if not m:
-            return None
-        return json.loads(m.group(0))
+            return None, "fallback"
+        return json.loads(m.group(0)), _model_label()
     except Exception as e:  # noqa: BLE001
         print(f"[llm] generation failed, using fallback: {e}")
-        return None
+        return None, "fallback"
 
 
 # ------------------------------ SCRIPT ------------------------------
@@ -92,9 +109,10 @@ Constraints:
 - cta_block: 2-3 sentences asking the viewer to take the CTA goal action
 - DO NOT use emojis."""
 
-    data = await _llm_json(SCRIPT_SYSTEM, user, f"script-{project['id']}")
+    data, source = await _llm_json(SCRIPT_SYSTEM, user, f"script-{project['id']}")
     if not data:
         data = _fallback_script(project, target_words)
+        source = "fallback"
 
     full = data.get("full_script", "")
     word_count = len(re.findall(r"\b\w+\b", full))
@@ -109,6 +127,7 @@ Constraints:
         "cta_block": data.get("cta_block", "").strip(),
         "word_count": word_count,
         "estimated_duration": estimated,
+        "generation_source": source,
     }
 
 
@@ -185,7 +204,7 @@ Rules:
 - search_terms: 3-5 concrete stock footage queries
 - image_prompt: one sentence describing a still for this scene"""
 
-    data = await _llm_json(SCENES_SYSTEM, user, f"scenes-{project['id']}")
+    data, _source = await _llm_json(SCENES_SYSTEM, user, f"scenes-{project['id']}")
     if data and isinstance(data.get("scenes"), list) and data["scenes"]:
         scenes = data["scenes"]
     else:
@@ -261,7 +280,7 @@ CTA goal: {project.get('cta_goal','subscribe')}
 Scene chapter hints:
 {chapter_hint}
 """
-    data = await _llm_json(META_SYSTEM, user, f"meta-{project['id']}")
+    data, _source = await _llm_json(META_SYSTEM, user, f"meta-{project['id']}")
     if not data:
         data = _fallback_metadata(project, scenes)
 
@@ -343,7 +362,7 @@ Niche: {project['niche']}
 Topic: {project['topic']}
 Visual style: {project.get('visual_style','cinematic')}
 Tone: {project['tone']}"""
-    data = await _llm_json(THUMB_SYSTEM, user, f"thumb-{project['id']}")
+    data, _source = await _llm_json(THUMB_SYSTEM, user, f"thumb-{project['id']}")
     concepts = (data or {}).get("concepts") or []
     if not concepts:
         concepts = _fallback_thumbnails(project)

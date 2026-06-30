@@ -340,7 +340,7 @@ def _log_cost(db, project_id: str, operation: str, tokens: int, cost: float):
     return db.cost_logs.insert_one({
         "id": str(uuid.uuid4()),
         "project_id": project_id,
-        "provider": "openai/gpt-5.2",
+        "provider": f"{os.environ.get('LLM_PROVIDER', 'gemini')}/{os.environ.get('LLM_MODEL', 'gemini-3-flash-preview')}",
         "operation": operation,
         "tokens_used": tokens,
         "characters_used": 0,
@@ -1293,8 +1293,8 @@ def _provider_modes() -> dict:
     return {
         "llm_text": {
             "mode": "live" if os.environ.get("EMERGENT_LLM_KEY") else "fallback",
-            "model": os.environ.get("LLM_MODEL", "gpt-5.2"),
-            "provider": os.environ.get("LLM_PROVIDER", "openai"),
+            "model": os.environ.get("LLM_MODEL", "gemini-3-flash-preview"),
+            "provider": os.environ.get("LLM_PROVIDER", "gemini"),
         },
         "thumbnail_image": {
             "mode": "mock" if thumb_images.is_mock_mode() else "live",
@@ -1548,7 +1548,7 @@ async def get_settings(user=Depends(get_current_user)):
             "default_tone": "calm-authoritative",
             "default_visual_style": "cinematic b-roll",
             "cost_limit_monthly": 50.0,
-            "preferred_provider": "openai/gpt-5.2",
+            "preferred_provider": f"{os.environ.get('LLM_PROVIDER', 'gemini')}/{os.environ.get('LLM_MODEL', 'gemini-3-flash-preview')}",
             "created_at": _now(),
             "updated_at": _now(),
         }
