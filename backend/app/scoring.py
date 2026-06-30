@@ -49,12 +49,22 @@ def quality_label(score: int) -> str:
 
 
 def compute_project_status(*, has_script: bool, has_scenes: bool, has_metadata: bool,
-                           has_assets: bool, render_status: Optional[str]) -> str:
+                           has_assets: bool, render_status: Optional[str],
+                           has_selected_thumbnail: bool = False,
+                           has_voiceover: bool = False,
+                           full_scene_coverage: bool = False) -> str:
     if render_status == "COMPLETED":
         return "COMPLETED"
     if render_status == "FAILED":
         return "FAILED"
-    if has_script and has_scenes and has_metadata and has_assets:
+    # READY_TO_RENDER must mirror render preflight semantics exactly: every
+    # prereq the preflight gates on must be true here, otherwise the status
+    # over-promises.
+    render_ready = (
+        has_script and has_scenes and has_metadata
+        and has_selected_thumbnail and has_voiceover and full_scene_coverage
+    )
+    if render_ready:
         return "READY_TO_RENDER"
     if has_script and has_scenes and has_metadata:
         return "ASSETS_READY" if has_assets else "METADATA_GENERATED"

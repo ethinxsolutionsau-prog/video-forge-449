@@ -1,7 +1,7 @@
 """Pydantic models for request/response schemas."""
 from datetime import datetime
 from typing import List, Optional, Literal
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 # ---------- Auth ----------
 class RegisterRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
@@ -203,7 +203,15 @@ class AssetStatusUpdate(BaseModel):
 # ---------- Auto-attach / Thumbnail images ----------
 class AutoAttachRequest(BaseModel):
     replace_existing: bool = False
-    media_type: Literal["both", "videos", "photos"] = "both"
+    media_type: Literal["both", "videos", "photos", "any"] = "both"
+
+    @field_validator("media_type", mode="before")
+    @classmethod
+    def _normalise_media_type(cls, v):
+        # Accept "any" as an alias for "both" — friendlier UX default.
+        if isinstance(v, str) and v.strip().lower() == "any":
+            return "both"
+        return v
 
 
 class GenerateThumbnailImagesRequest(BaseModel):

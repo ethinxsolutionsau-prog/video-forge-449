@@ -240,9 +240,25 @@ async def _attach_project_view(db, project: dict) -> dict:
         sort=[("created_at", -1)],
     )
     score = quality_score(project=project, script=script, scenes=scenes, metadata=metadata, render_job=render_job)
+
+    # Render-readiness signals (must match preflight in render service)
+    has_selected_thumb = bool(project.get("selected_thumbnail_asset_id"))
+    has_full_vo = bool(project.get("selected_voiceover_asset_id"))
+    scene_ids = {sc.get("id") for sc in scenes}
+    scene_vo_ids = {a.get("scene_id") for a in assets
+                    if a.get("asset_type") == "voiceover_audio" and a.get("scene_id")}
+    has_scene_vo_coverage = bool(scene_ids) and scene_ids.issubset(scene_vo_ids)
+    has_voiceover = has_full_vo or has_scene_vo_coverage
+    scenes_with_visual = {a.get("scene_id") for a in assets
+                          if a.get("scene_id") and a.get("asset_type") in ("stock_video", "stock_image")}
+    full_scene_coverage = bool(scene_ids) and scene_ids.issubset(scenes_with_visual)
+
     status = compute_project_status(
         has_script=bool(script), has_scenes=bool(scenes), has_metadata=bool(metadata),
         has_assets=bool(assets), render_status=(render_job or {}).get("status"),
+        has_selected_thumbnail=has_selected_thumb,
+        has_voiceover=has_voiceover,
+        full_scene_coverage=full_scene_coverage,
     )
     if status != project.get("status"):
         await db.projects.update_one({"id": project["id"]}, {"$set": {"status": status, "updated_at": _now()}})
@@ -1033,15 +1049,29 @@ async def generate_full_voiceover(
     payload["text_excerpt"] = text[:240]
     payload["created_at"] = _now()
     payload["updated_at"] = _now()
+    # Auto-select: mirror the thumbnail auto-chain so render preflight passes
+    # immediately after generation. Any previously selected full-script voiceover
+    # is demoted to keep the per-project exclusivity invariant.
+    payload["status"] = "selected"
+    await db.assets.update_many(
+        {
+            "project_id": project_id,
+            "asset_type": "voiceover_audio",
+            "scene_id": None,
+            "status": "selected",
+        },
+        {"$set": {"status": "generated", "updated_at": _now()}},
+    )
     await db.assets.insert_one(dict(payload))
+    project_cost = float(project.get("estimated_cost", 0))
+    project_set = {"selected_voiceover_asset_id": asset_id, "updated_at": _now()}
 
     if not payload.get("mock"):
         cost = float(payload.get("cost_estimate") or 0)
         if cost:
-            await db.projects.update_one(
-                {"id": project_id},
-                {"$set": {"estimated_cost": float(project.get("estimated_cost", 0)) + cost, "updated_at": _now()}},
-            )
+            project_set["estimated_cost"] = project_cost + cost
+
+    await db.projects.update_one({"id": project_id}, {"$set": project_set})
     return await _attach_project_view(db, await db.projects.find_one({"id": project_id}, {"_id": 0}))
 
 
