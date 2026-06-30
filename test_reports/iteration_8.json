@@ -1,0 +1,43 @@
+{
+  "summary": "Frontend E2E verification of the new 'One-click render' AutoRenderButton on the Overview tab passed end-to-end. Logged in as creator, created project 'OneClick Render Test' (90s, design psychology), generated script → scenes → metadata, returned to Overview, and exercised the new flow. All required data-testid contracts behaved exactly as specified: card visible, button clickable, decision-trace populated with 3 rows (auto-attach + voiceover + OK preflight), live progress bar advanced 0% → 47% → 65% → 94% → completion in ~26s after click, and a real MP4 player + download link surfaced. The video src points to https://videos.ethinx.solutions/renders/<project_id>/<job_id>.mp4 as required. No console errors from the new component.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Dashboard (sparkline) — not in scope but observed",
+        "issues": [
+          "Recharts warning 'The width(-1) and height(-1) of chart should be greater than 0' still fires 4x on dashboard load. Pre-existing from iteration 7. Not related to AutoRenderButton."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_8.json"
+  ],
+  "action_items": [
+    "No action required for the AutoRenderButton feature — it works exactly as specified.",
+    "(Optional, carry-over from iter 7) Suppress the Recharts width/height warning on the dashboard sparkline by giving the ResponsiveContainer an explicit aspect or min-height."
+  ],
+  "critical_code_review_comments": [
+    "AutoRenderButton.jsx polling loop has a hard cap of 90 iterations × 2.5s = 225s, after which it silently stops polling without surfacing a UI error if the job is still in-flight. Low risk because /render/auto typically returns in ~30s, but worth surfacing a 'timed-out – refresh to check status' message after the loop exits without a terminal status.",
+    "AutoRenderButton.jsx catches polling errors with an empty `catch {}` (line 32). If the backend starts returning 401/403 mid-poll (token expired), the user will see the progress bar stuck on the last %; consider breaking out on consecutive failures or surfacing a soft warning after N failed polls.",
+    "Decision-trace key uses iteration number (`key={\\`iter-${d.iteration}\\`}`) — if the backend ever returns multiple decisions with the same iteration index (e.g. duplicate remediations), React will complain about duplicate keys. Concatenating iteration + remediation.type would be safer.",
+    "AutoRenderButton.jsx imports `formatApiError` from ../lib/api but never uses it — minor lint nit, safe to drop."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "n/a (frontend-only run)",
+    "frontend": "100%"
+  },
+  "test_credentials": "creator@facelessforge.io / creator123 (sourced from /app/memory/test_credentials.md, login succeeded).",
+  "seed_data_creation": "Created one project via UI: name='OneClick Render Test', id=ce36373c-96d9-4301-b480-781b3f4331e5, with full pipeline (script, 6 scenes, metadata, thumbnails, voiceover via mock_tts, 92s MP4 render). Not cleaned up but identifiable by name.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "AutoRenderButton flow walks: login → POST /api/projects → tab-script / generate-script-btn → tab-scenes / generate-scenes-btn → tab-metadata / generate-metadata-btn → tab-overview → auto-render-card → auto-render-btn → auto-render-trace → auto-render-progress → auto-render-result-ok (video element) + auto-render-download. Total wall-clock from click to MP4 ready ≈ 26s in the preview env (well under the 90s SLA). Voiceover uses mock_tts fallback (LLM budget exhausted) and that path is shown in the decision trace as 'voiceover (95s · mock_tts · mock)' — expected. The video src returned points to the external CDN at videos.ethinx.solutions/renders/<proj_id>/<job_id>.mp4 and is the same URL used by the download anchor.",
+  "rca of the issue": "No bug to RCA — feature works as designed. Timings observed: trace appeared in 4s, first non-zero progress in 6s, completion in 26s."
+}

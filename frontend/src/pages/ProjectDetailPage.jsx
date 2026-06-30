@@ -13,6 +13,7 @@ import ThumbnailPanel from "../components/ThumbnailPanel";
 import RenderPanel from "../components/RenderPanel";
 import SharePanel from "../components/SharePanel";
 import VoiceoverPanel from "../components/VoiceoverPanel";
+import AutoRenderButton from "../components/AutoRenderButton";
 import { api, formatApiError, API } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatCurrency, formatDuration } from "../lib/format";
@@ -234,6 +235,13 @@ export default function ProjectDetailPage() {
                   }
                 />
               </div>
+              <AutoRenderButton
+                projectId={project.id}
+                project={project}
+                renderJob={render_job}
+                canEdit={canEdit}
+                onChange={fetchView}
+              />
               {render_job?.status === "completed" && render_job.output_url && (
                 <div data-testid="overview-final-video" className="border border-[#00FF66]/30 bg-[#00FF66]/5 rounded-sm p-4 space-y-3">
                   <div className="font-mono text-[10px] uppercase tracking-widest text-[#00FF66]">
